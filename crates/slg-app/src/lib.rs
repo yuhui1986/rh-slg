@@ -1405,3 +1405,274 @@ fn input_diagnostics(
     );
 }
 
+// ---------------------------------------------------------------------------
+// Bevy 集成测试：headless 模式跑 handle_hex_click + process_tick_phases
+//
+// 用 MinimalPlugins（无 window / render / egui）创建 App，手动 init 资源，
+// 注入 HexClickEvent，验证 MarchManager / 占地 / 揭雾 等真实系统行为。
+//
+// 这些测试才是用户问题的"真在 Bevy 跑"——之前的 slg-core 单元测试只验证
+// 算法，集成测试验证 Bevy system 链路。
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod bevy_tests {
+    use super::*;
+    use bevy::app::App;
+    use slg_core::entity::faction::{FactionPersonality, FactionResources, FactionState};
+    use slg_core::map::tile::TerrainType;
+
+    /// 创建带 MinimalPlugins + 必要 resources 的 App
+    fn make_app() -> App {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins);
+        // Sprite / Mesh2d 等渲染 component 不在 MinimalPlugins 里；
+        // 但 handle_hex_click 的 commands.spawn((Sprite, ...)) 是 deferred，
+        // 不会在 system 执行时立刻注册 component，所以测试 1 帧内不会 panic。
+        app.add_event::<HexClickEvent>();
+        app.add_event::<HexRightClickEvent>();
+        app.init_resource::<GameState>();
+        app.init_resource::<FactionStoreResource>();
+        app.init_resource::<TerritoryManagerResource>();
+        app.init_resource::<FactionIdMap>();
+        app.init_resource::<TerrainMapResource>();
+        app.init_resource::<MarchManagerResource>();
+        app.init_resource::<FogOfWarResource>();
+        app.init_resource::<slg_engine::systems::GameClockResource>();
+        app.init_resource::<slg_engine::systems::CommandQueueResource>();
+        app
+    }
+
+    /// 手动 init 一个最小可玩状态：
+    /// - game phase = Playing
+    /// - 玩家 = faction_1
+    /// - 玩家主城 = (68, 65)
+    /// - 整张 128x128 = plains
+    fn init_playing_state(world: &mut World) {
+        // GameState
+        let mut gs = world.resource_mut::<GameState>();
+        gs.phase = GamePhase::Playing;
+        gs.player_faction_id = "faction_1".to_string();
+        gs.tick = 0;
+
+        // TerritoryManager: register 128x128 + 玩家主城 + occupy
+        let main_city = HexCoord::new(68, 65);
+        {
+            let mut tm = world.resource_mut::<TerritoryManagerResource>();
+            for r in 0..128i32 {
+                for q in 0..128i32 {
+                    tm.manager.register_tile(HexCoord::new(q, r));
+                }
+            }
+            tm.manager.set_main_city(&"faction_1".to_string(), main_city);
+            tm.manager.occupy(main_city, &"faction_1".to_string());
+        }
+
+        // TerrainMap: 全部 plains（保证 can_occupy 通过）
+        {
+            let mut terrain = world.resource_mut::<TerrainMapResource>();
+            for q in 0..128i32 {
+                for r in 0..128i32 {
+                    terrain
+                        .map
+                        .insert(((r as u64) << 32) | (q as u64), TerrainType::Plains);
+                }
+            }
+        }
+
+        // FactionStore: faction_1
+        {
+            let mut fs = world.resource_mut::<FactionStoreResource>();
+            fs.store.factions.insert(
+                "faction_1".to_string(),
+                FactionState {
+                    resources: FactionResources::default(),
+                    personality: FactionPersonality {
+                        aggression: 0.5,
+                        expansion: 0.5,
+                        diplomacy: 0.5,
+                        caution: 0.5,
+                    },
+                    main_city: Some(main_city),
+                    diplomacy: Default::default(),
+                },
+            );
+        }
+
+        // FactionIdMap
+        {
+            let mut fim = world.resource_mut::<FactionIdMap>();
+            fim.map.insert("faction_1".to_string(), 6);
+        }
+
+        // FogOfWar: 全黑 + 玩家主城周围 7 格揭开
+        {
+            let mut fog = world.resource_mut::<FogOfWarResource>();
+            let cities = vec![(main_city, "faction_1".to_string())];
+            fog.fog = slg_core::fog::FogOfWar::init_with_cities(
+                128,
+                128,
+                &cities,
+                &"faction_1".to_string(),
+            );
+        }
+    }
+
+    /// 测试 1：handle_hex_click 在 HexClickEvent 注入后 dispatch march
+    #[test]
+    fn bevy_handle_hex_click_dispatches_march() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        app.add_systems(Update, handle_hex_click);
+
+        let target = HexCoord::new(69, 65); // 玩家主城 (68,65) 的东邻
+        app.world_mut().send_event(HexClickEvent {
+            coord: target,
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+
+        app.update();
+
+        // 验证：MarchManager 收到 1 个 order
+        let march = app.world().resource::<MarchManagerResource>();
+        assert_eq!(
+            march.manager.orders.len(),
+            1,
+            "派兵后 MarchManager 应有 1 个 order, got {}",
+            march.manager.orders.len()
+        );
+        let order = march.manager.orders.values().next().unwrap();
+        assert_eq!(order.from, HexCoord::new(68, 65), "from 应是玩家主城");
+        assert_eq!(order.to, target, "to 应是点击的 target");
+        assert_eq!(
+            order.troops, slg_core::military::TROOPS_PER_MARCH,
+            "兵数应是固定 TROOPS_PER_MARCH"
+        );
+        eprintln!(
+            "TEST1 ✅: 派兵 1 队 from=({},{}) to=({},{}) arrive_tick={}",
+            order.from.q, order.from.r, order.to.q, order.to.r, order.arrive_tick
+        );
+    }
+
+    /// 测试 2：派兵后揭开路径
+    #[test]
+    fn bevy_dispatch_reveals_fog_path() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        app.add_systems(Update, handle_hex_click);
+
+        // 派兵到 1 hex 邻接（handle_hex_click 用 can_occupy，只能派 1 hex 邻接）
+        let target = HexCoord::new(69, 65); // 东邻 1 hex (玩家主城 (68,65))
+        app.world_mut().send_event(HexClickEvent {
+            coord: target,
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+
+        // 验证：path = [from, to] 2 格都揭开
+        let march = app.world().resource::<MarchManagerResource>();
+        assert_eq!(march.manager.orders.len(), 1, "派兵应成功");
+        let order = march.manager.orders.values().next().unwrap();
+        eprintln!(
+            "TEST2 DEBUG: order.from=({},{}), to=({},{}), path={:?}",
+            order.from.q, order.from.r, order.to.q, order.to.r, order.path
+        );
+
+        let fog = app.world().resource::<FogOfWarResource>();
+        for c in &order.path {
+            assert_eq!(
+                fog.fog.get(c.q, c.r),
+                slg_core::fog::FOG_VISIBLE,
+                "path 节点 ({}, {}) 应该揭开, actual fog = {}",
+                c.q,
+                c.r,
+                fog.fog.get(c.q, c.r)
+            );
+        }
+        eprintln!(
+            "TEST2 ✅: 派兵 1 hex 邻接 from=({},{}) to=({},{}), {} 格全揭开",
+            order.from.q,
+            order.from.r,
+            order.to.q,
+            order.to.r,
+            order.path.len()
+        );
+    }
+
+    /// 测试 3：目标格被锁定后不能双派
+    #[test]
+    fn bevy_double_dispatch_blocked() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        app.add_systems(Update, handle_hex_click);
+
+        let target = HexCoord::new(69, 65);
+        // 第一次派兵
+        app.world_mut()
+            .send_event(HexClickEvent { coord: target, world_pos: Vec2::new(0.0, 0.0) });
+        app.update();
+        // 第二次派兵到同格
+        app.world_mut()
+            .send_event(HexClickEvent { coord: target, world_pos: Vec2::new(0.0, 0.0) });
+        app.update();
+
+        let march = app.world().resource::<MarchManagerResource>();
+        assert_eq!(
+            march.manager.orders.len(),
+            1,
+            "目标锁住时第二次派兵应被拒绝, got {} orders",
+            march.manager.orders.len()
+        );
+        eprintln!("TEST3 ✅: 双派被目标锁定阻止");
+    }
+
+    /// 测试 4：完整端到端：派兵 → 推进 tick → 到达 → 占地
+    ///
+    /// 直接调 process_tick_phases 多次（每次 +1 tick），覆盖 MarchAdvance 阶段
+    #[test]
+    fn bevy_full_march_arrive_occupy() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+
+        // 手动设置 tick = 100，clock 进入第 100 tick
+        {
+            let mut clock = app.world_mut().resource_mut::<slg_engine::systems::GameClockResource>();
+            clock.clock.current_tick = 100;
+        }
+
+        // 注册 dispatch + 推进系统
+        app.add_systems(Update, (handle_hex_click, process_tick_phases).chain());
+
+        // 派兵
+        let target = HexCoord::new(69, 65);
+        app.world_mut().send_event(HexClickEvent {
+            coord: target,
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+
+        // 推进 5 tick（行军 5 tick 到 1 hex）
+        for _ in 0..5 {
+            // 直接 advance clock + 跑 process_tick_phases
+            {
+                let mut clock = app
+                    .world_mut()
+                    .resource_mut::<slg_engine::systems::GameClockResource>();
+                clock.clock.current_tick += 1;
+            }
+            app.update();
+        }
+
+        // 验证：target 已被玩家占地
+        let tm = app.world().resource::<TerritoryManagerResource>();
+        let target_key = target.to_tile_key();
+        assert_eq!(
+            tm.manager.owner_map.get(&target_key),
+            Some(&"faction_1".to_string()),
+            "到达后 target 应归玩家"
+        );
+        eprintln!("TEST4 ✅: 派兵 → 5 tick → 占地成功");
+    }
+}
+
+
