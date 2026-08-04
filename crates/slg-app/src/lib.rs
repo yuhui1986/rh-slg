@@ -62,6 +62,15 @@ pub struct MarchManagerResource {
     pub manager: slg_core::military::MarchManager,
 }
 
+/// 全局资源格 Resource：TileKey → ResourceType
+///
+/// 从 `load_result.tile_resources` 填充，process_tick_phases 的
+/// ResourceProduction 阶段用这个查每格的资源类型 → 算产量。
+#[derive(Debug, Clone, Default, Resource)]
+pub struct TileResourceMap {
+    pub map: std::collections::BTreeMap<TileKey, slg_core::map::tile::ResourceType>,
+}
+
 /// 行军视觉 component：每个活跃 MarchOrder 对应一个 entity
 ///
 /// sprite 位置 = lerp(from, to, march_manager.orders[id].progress(current_tick))
@@ -120,6 +129,7 @@ impl Plugin for SlgAppPlugin {
             .init_resource::<FactionIdMap>()
             .init_resource::<TerrainMapResource>()
             .init_resource::<MarchManagerResource>()
+            .init_resource::<TileResourceMap>()
             // 启动系统：生成地图、初始化势力
             .add_systems(Startup, setup_game)
             // 主菜单动作处理 + 地图点击
@@ -329,6 +339,7 @@ fn start_new_game(
     faction_id_map: &mut FactionIdMap,
     terrain_map: &mut TerrainMapResource,
     fog_res: &mut FogOfWarResource,
+    tile_res: &mut TileResourceMap,
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
@@ -505,6 +516,12 @@ fn start_new_game(
                 }
             }
         }
+    }
+
+    // 把 load_result.tile_resources 灌进 TileResourceMap（经济系统用）
+    tile_res.map.clear();
+    for (key, rt) in &load_result.tile_resources {
+        tile_res.map.insert(*key, *rt);
     }
 
     for core_chunk in &load_result.chunk_data {
@@ -694,6 +711,7 @@ fn handle_new_game_actions(
     mut faction_id_map: ResMut<FactionIdMap>,
     mut terrain_map: ResMut<TerrainMapResource>,
     mut fog_res: ResMut<FogOfWarResource>,
+    mut tile_res: ResMut<TileResourceMap>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     existing_chunks: Query<Entity, With<EngineChunkData>>,
@@ -713,6 +731,7 @@ fn handle_new_game_actions(
                     &mut *faction_id_map,
                     &mut *terrain_map,
                     &mut *fog_res,
+                    &mut *tile_res,
                     &mut commands,
                     &mut meshes,
                     &mut materials,
@@ -781,6 +800,7 @@ fn process_tick_phases(
     mut fog_res: ResMut<FogOfWarResource>,
     faction_id_map: Res<FactionIdMap>,
     terrain_map: Res<TerrainMapResource>,
+    tile_res: Res<TileResourceMap>,
     mut game_state: ResMut<GameState>,
     mut chunk_query: Query<&mut EngineChunkData>,
 ) {
@@ -810,11 +830,18 @@ fn process_tick_phases(
                     }
                 }
                 TickPhase::ResourceProduction => {
-                    // 每个势力的资源产出（简化实现）
-                    for faction in faction_res.store.factions.values_mut() {
-                        // 基础产出：每 tick 产出固定资源
-                        faction.resources.gold += 10;
-                        faction.resources.food += 5;
+                    // 圈地产资源：遍历所有圈地按地形 + 资源格算产量
+                    // 之前是每个势力 +10 gold +5 food（硬编码，与圈地无关）
+                    // 现在按 slg-core::economy 真实计算
+                    let production = slg_core::economy::tick_resource_production(
+                        &terrain_map.map,
+                        &tile_res.map,
+                        &territory_res.manager.owner_map,
+                    );
+                    for (faction_id, prod) in &production {
+                        if let Some(faction) = faction_res.store.factions.get_mut(faction_id) {
+                            slg_core::economy::apply_production(&mut faction.resources, prod);
+                        }
                     }
                 }
                 TickPhase::MarchAdvance => {
@@ -1438,6 +1465,7 @@ mod bevy_tests {
         app.init_resource::<TerrainMapResource>();
         app.init_resource::<MarchManagerResource>();
         app.init_resource::<FogOfWarResource>();
+        app.init_resource::<TileResourceMap>();
         app.init_resource::<slg_engine::systems::GameClockResource>();
         app.init_resource::<slg_engine::systems::CommandQueueResource>();
         app
@@ -1672,6 +1700,161 @@ mod bevy_tests {
             "到达后 target 应归玩家"
         );
         eprintln!("TEST4 ✅: 派兵 → 5 tick → 占地成功");
+    }
+
+    /// 测试 5：圈地后每 tick 资源增长
+    ///
+    /// 验证 process_tick_phases 的 ResourceProduction 阶段：
+    /// 圈地 plains -> 每 tick +5 food
+    #[test]
+    fn bevy_resource_production_per_tick() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+
+        // 玩家主城 (68, 65) 是 Plains -> 每 tick 产 5 food
+        let initial_food = app
+            .world()
+            .resource::<FactionStoreResource>()
+            .store
+            .factions
+            .get("faction_1")
+            .unwrap()
+            .resources
+            .food;
+        eprintln!("TEST5 DEBUG: 初始 food = {}", initial_food);
+
+        // 跑 1 tick
+        app.add_systems(Update, process_tick_phases);
+        {
+            let mut clock =
+                app.world_mut()
+                    .resource_mut::<slg_engine::systems::GameClockResource>();
+            clock.clock.current_tick = 1;
+        }
+        app.update();
+
+        // 验证：food 增长 5
+        let after_food = app
+            .world()
+            .resource::<FactionStoreResource>()
+            .store
+            .factions
+            .get("faction_1")
+            .unwrap()
+            .resources
+            .food;
+        eprintln!("TEST5 DEBUG: 1 tick 后 food = {} (期望 initial+5)", initial_food);
+        assert_eq!(
+            after_food,
+            initial_food + 5,
+            "圈地 1 格 Plains, 1 tick 后 food 应 +5"
+        );
+
+        // 再跑 9 tick，验证累计
+        for _ in 0..9 {
+            {
+                let mut clock =
+                    app.world_mut()
+                        .resource_mut::<slg_engine::systems::GameClockResource>();
+                clock.clock.current_tick += 1;
+            }
+            app.update();
+        }
+        let after_10 = app
+            .world()
+            .resource::<FactionStoreResource>()
+            .store
+            .factions
+            .get("faction_1")
+            .unwrap()
+            .resources
+            .food;
+        assert_eq!(
+            after_10,
+            initial_food + 50,
+            "10 tick 后 food 应 = initial + 5*10 = initial+50, got initial+{}",
+            after_10 - initial_food
+        );
+        eprintln!("TEST5 ✅: 10 tick 圈地 1 Plains = food +50");
+    }
+
+    /// 测试 6：派兵后新圈地的格也开始产资源
+    ///
+    /// 验证：玩家初始占 1 格 (Plains, food+5/tick)，
+    /// 派兵 1 hex 邻接（假设 Plains）落地后变成 2 格，应该 food +10/tick
+    #[test]
+    fn bevy_new_territory_adds_production() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+
+        // clock tick 0
+        {
+            let mut clock =
+                app.world_mut()
+                    .resource_mut::<slg_engine::systems::GameClockResource>();
+            clock.clock.current_tick = 0;
+        }
+
+        app.add_systems(Update, (handle_hex_click, process_tick_phases).chain());
+
+        // 派兵 1 hex
+        let target = HexCoord::new(69, 65);
+        app.world_mut().send_event(HexClickEvent {
+            coord: target,
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+
+        // 推进 5 tick 让兵到达
+        for _ in 0..5 {
+            {
+                let mut clock =
+                    app.world_mut()
+                        .resource_mut::<slg_engine::systems::GameClockResource>();
+                clock.clock.current_tick += 1;
+            }
+            app.update();
+        }
+
+        // 占地 2 格都应该是 Plains -> food +10/tick
+        // 记录占地后的 food
+        let food_after_arrival = app
+            .world()
+            .resource::<FactionStoreResource>()
+            .store
+            .factions
+            .get("faction_1")
+            .unwrap()
+            .resources
+            .food;
+        eprintln!("TEST6 DEBUG: 占地完成时 food = {}", food_after_arrival);
+
+        // 再跑 1 tick
+        {
+            let mut clock =
+                app.world_mut()
+                    .resource_mut::<slg_engine::systems::GameClockResource>();
+            clock.clock.current_tick += 1;
+        }
+        app.update();
+
+        let food_next_tick = app
+            .world()
+            .resource::<FactionStoreResource>()
+            .store
+            .factions
+            .get("faction_1")
+            .unwrap()
+            .resources
+            .food;
+        let delta = food_next_tick - food_after_arrival;
+        eprintln!("TEST6 DEBUG: 占地后再 1 tick food +{}", delta);
+        assert_eq!(
+            delta, 10,
+            "2 格 Plains 1 tick 应产 10 food (5+5), got {}",
+            delta
+        );
+        eprintln!("TEST6 ✅: 派兵落地后圈地扩大, 资源产出翻倍");
     }
 }
 
