@@ -399,6 +399,44 @@ mod tests {
         );
     }
 
+    /// 诊断：打印 6 个 spawn 的 (q, r) 验证 round-trip 不丢符号
+    /// 用户报告主城 marker 出现在 r<0 的位置——先确认 gen→entity_placements 这一步正确
+    #[test]
+    fn test_diagnostic_sanguo_dl_spawns() {
+        let preset = GenerationPreset {
+            name: "三国鼎立".to_string(),
+            description: "诊断用".to_string(),
+            width: 128,
+            height: 128,
+            seed: 42,
+            terrain_style: 0.5,
+            richness: 0.6,
+            num_factions: 6,
+            tags: vec!["三国".to_string()],
+        };
+        let doc = generate_map(42, &preset);
+
+        eprintln!("─── 三国鼎立 spawn 诊断 (共 {}) ───", doc.entities.placements.len());
+        for (key, placement) in &doc.entities.placements {
+            use crate::map::grid::HexCoord;
+            let c = HexCoord::from_tile_key(*key);
+            eprintln!(
+                "  {} @ key=0x{:016X} hex=(q={}, r={})",
+                placement.faction_id.as_deref().unwrap_or("?"),
+                key,
+                c.q,
+                c.r
+            );
+            // round-trip 验证
+            let round_trip = c.to_tile_key();
+            assert_eq!(round_trip, *key, "round-trip mismatch");
+            // 范围验证
+            assert!(c.q >= 0 && c.q < preset.width as i32, "q out of range: {}", c.q);
+            assert!(c.r >= 0 && c.r < preset.height as i32, "r out of range: {}", c.r);
+        }
+        assert_eq!(doc.entities.placements.len(), 6, "expected 6 spawns");
+    }
+
     /// 输出地图无大面积水域死区（陆地占比 > 60%）
     #[test]
     fn test_land_ratio_above_60() {

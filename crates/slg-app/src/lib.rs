@@ -164,6 +164,8 @@ fn update_click_rings(
 struct MainCityMarker {
     #[allow(dead_code)] // 未来用于 hover/click → 弹出城池信息面板
     pub faction_id: FactionId,
+    /// 主城 hex 坐标（debug 用：与 marker 的 world position 对比，确认是 hex 还是转换出错）
+    pub hex: HexCoord,
 }
 
 /// 在点击位置 spawn 一个白色圆环
@@ -554,7 +556,7 @@ fn start_new_game(
                         ..default()
                     },
                     Transform::from_translation(Vec3::new(center.x, center.y, 1.5)),
-                    MainCityMarker { faction_id: fid.clone() },
+                    MainCityMarker { faction_id: fid.clone(), hex: main_coord },
                 ));
             }
         }
@@ -925,9 +927,13 @@ fn render_map_debug(
             let mut city_lines: Vec<String> = Vec::new();
             city_lines.push(format!("主城 marker 总数: {} (期望 6)", main_city_markers.iter().count()));
             for (marker, t) in main_city_markers.iter() {
+                // 打印 hex (q, r) + world (x, y)：立刻能看出是 hex 本身为负
+                // 还是 hex→world 转换出错
                 city_lines.push(format!(
-                    "  • {} @ ({:.1}, {:.1})",
+                    "  • {} hex=({}, {}) world=({:.1}, {:.1})",
                     marker.faction_id,
+                    marker.hex.q,
+                    marker.hex.r,
                     t.translation.x,
                     t.translation.y
                 ));
