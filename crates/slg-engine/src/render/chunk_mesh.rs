@@ -200,7 +200,8 @@ fn generate_full_mesh(terrains: &[u8; 1024], owners: &[u8; 1024], fog: &[u8; 102
             // 黑雾：颜色 × 0.3 + 黑 0.0 (alpha 保持 1.0)
             let final_color = if is_fogged {
                 let s = final_color.to_srgba();
-                Color::srgb(s.red * 0.3, s.green * 0.3, s.blue * 0.3)
+                // 0.55 调暗（之前 0.3 太暗看着像遮罩，0.55 让玩家能看清地形但不显眼）
+                Color::srgb(s.red * 0.55, s.green * 0.55, s.blue * 0.55)
             } else {
                 final_color
             };
@@ -292,7 +293,7 @@ fn generate_merged_mesh(
             );
             let final_color = if is_fogged {
                 let s = avg_color.to_srgba();
-                Color::srgb(s.red * 0.3, s.green * 0.3, s.blue * 0.3)
+                Color::srgb(s.red * 0.55, s.green * 0.55, s.blue * 0.55)
             } else {
                 avg_color
             };

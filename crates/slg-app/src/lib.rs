@@ -1058,13 +1058,11 @@ fn render_map_debug(
 
     let ctx = contexts.ctx_mut();
 
-    egui::Window::new("地图调试")
-        .default_open(true)
-        // 固定大小 + 钉在右下角，避免浮动 window 自动 resize 后盖住中央地图
-        // （之前 6 个主城 marker + 8 项地形统计一行 label 把 window 撑大，
-        //  玩家点 fogged 区域时 window 正好挡在中央，hex_click 让不出去）
-        .fixed_size([320.0, 460.0])
-        .anchor(egui::Align2::RIGHT_BOTTOM, [-10.0, -10.0])
+    // 改用 SidePanel 而不是 Window：
+    // - Window 是 floating，可能盖住中央；title bar / 边框实际 region 与 fixed_size 行为不可控
+    // - SidePanel 物理上贴边，绝对不会盖住中央地图
+    egui::SidePanel::right("debug_panel")
+        .default_width(320.0)
         .resizable(false)
         .show(ctx, |ui| {
             // 相机
@@ -1132,6 +1130,23 @@ fn render_map_debug(
             for line in city_lines {
                 ui.label(line);
             }
+
+            ui.separator();
+            ui.label("─── 迷雾 ───");
+            // 统计全图 fog 状态：可见 / 全部 / 百分比
+            // 用来核对 fog init 是否生效（玩家主城周围应该有 ~7 格可见）
+            let mut visible = 0u32;
+            let mut total = 0u32;
+            for chunk in chunk_query.iter() {
+                for &f in &chunk.fog {
+                    total += 1;
+                    if f == 1 {
+                        visible += 1;
+                    }
+                }
+            }
+            let pct = if total > 0 { visible * 100 / total } else { 0 };
+            ui.label(format!("可见: {}/{} ({}%)", visible, total, pct));
 
             ui.separator();
             ui.label("─── 鼠标/拾取 ───");
