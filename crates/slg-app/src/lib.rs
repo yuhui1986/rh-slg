@@ -525,21 +525,32 @@ fn start_new_game(
         transform.translation = Vec3::new(map_center_x, map_center_y, 0.0);
     }
 
-    // 生成主城 marker：每个势力的主城位置画一个特殊 sprite
-    // 用 faction_color(0) 的色调（玩家金色，AI 各色）做边框色，方便玩家一眼看到自己基地
+    // 生成主城 marker：每个势力的主城位置画一个"外黑内白"的双色 sprite
+    //
+    // 关键：直接用势力色 + alpha 0.7 在小 scale 下会跟同色地形融化（玩家金色基地
+    // 放在金色地块上根本看不出），所以用**黑色外框 + 白色内核**的对比组合：
+    //   - 外框 (2.4x hex, 黑色) 在任何地形色上都清晰
+    //   - 内核 (1.4x hex, 白色) 在黑框内醒目，能告诉玩家"这是特殊位置"
+    // 玩家一眼看到自己的白点 = 基地。
     for fid in faction_res.store.factions.keys() {
         if let Some(faction) = faction_res.store.factions.get(fid) {
             if let Some(main_coord) = faction.main_city {
-                let color_idx = faction_id_map.get(fid);
-                let faction_col = slg_engine::render::atlas::faction_color(color_idx);
                 let center = slg_engine::camera::hex_world_position(main_coord);
+                let hex_size = slg_engine::render::chunk_mesh::HEX_SIZE;
+                // 外框（黑）—— z=1.4
                 commands.spawn((
                     Sprite {
-                        color: faction_col,
-                        custom_size: Some(Vec2::new(
-                            slg_engine::render::chunk_mesh::HEX_SIZE * 1.6,
-                            slg_engine::render::chunk_mesh::HEX_SIZE * 1.6,
-                        )),
+                        color: Color::srgba(0.0, 0.0, 0.0, 0.95),
+                        custom_size: Some(Vec2::new(hex_size * 2.4, hex_size * 2.4)),
+                        ..default()
+                    },
+                    Transform::from_translation(Vec3::new(center.x, center.y, 1.4)),
+                ));
+                // 内核（白）—— z=1.5，盖在外框之上
+                commands.spawn((
+                    Sprite {
+                        color: Color::srgba(1.0, 1.0, 1.0, 1.0),
+                        custom_size: Some(Vec2::new(hex_size * 1.4, hex_size * 1.4)),
                         ..default()
                     },
                     Transform::from_translation(Vec3::new(center.x, center.y, 1.5)),
