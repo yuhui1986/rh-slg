@@ -1060,6 +1060,12 @@ fn render_map_debug(
 
     egui::Window::new("地图调试")
         .default_open(true)
+        // 固定大小 + 钉在右下角，避免浮动 window 自动 resize 后盖住中央地图
+        // （之前 6 个主城 marker + 8 项地形统计一行 label 把 window 撑大，
+        //  玩家点 fogged 区域时 window 正好挡在中央，hex_click 让不出去）
+        .fixed_size([320.0, 460.0])
+        .anchor(egui::Align2::RIGHT_BOTTOM, [-10.0, -10.0])
+        .resizable(false)
         .show(ctx, |ui| {
             // 相机
             if let Ok(t) = camera_query.get_single() {
