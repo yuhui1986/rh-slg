@@ -130,7 +130,7 @@ fn test_100_tick_no_panic() {
         let ticks = advance_clock(&mut clock, 100.0);
         for _ in 0..ticks {
             // 简化资源产出
-            for (_id, faction) in &mut factions {
+            for faction in factions.values_mut() {
                 faction.resources.gold += 10;
                 faction.resources.food += 5;
             }

@@ -131,16 +131,15 @@ fn spawn_click_ring(commands: &mut Commands, world_pos: Vec2) {
     // 圆环大小需要跟相机 scale 反向关联：scale 越大（看得越远），圆环也越大
     // 简化方案：固定 20 世界单位（在 scale=1.0 下 20 像素，scale=3.0 下 60 像素，足够醒目）
     let size = 20.0_f32;
+    // Bevy 0.15：直接 spawn 组件，不再用 SpriteBundle（已 deprecated）
+    // Sprite 组件会自动插入默认的 Transform + GlobalTransform + Visibility
     commands.spawn((
-        SpriteBundle {
-            sprite: Sprite {
-                color: Color::srgba(1.0, 1.0, 1.0, 1.0),
-                custom_size: Some(Vec2::new(size, size)),
-                ..default()
-            },
-            transform: Transform::from_translation(Vec3::new(world_pos.x, world_pos.y, 2.0)),
+        Sprite {
+            color: Color::srgba(1.0, 1.0, 1.0, 1.0),
+            custom_size: Some(Vec2::new(size, size)),
             ..default()
         },
+        Transform::from_translation(Vec3::new(world_pos.x, world_pos.y, 2.0)),
         ClickRing { lifetime: 1.0 },
     ));
 }
@@ -257,6 +256,7 @@ fn setup_game(
 }
 
 /// 根据配置生成地图并初始化游戏世界
+#[allow(clippy::too_many_arguments)] // Bevy 系统的标准 pattern：start_new_game 由 handle_new_game_actions 在 NewGameAction::StartGame 时调用，参数均为系统 resource
 fn start_new_game(
     config: &GameSetupConfig,
     game_state: &mut GameState,
@@ -501,6 +501,8 @@ fn handle_main_menu_actions(
 // ---------------------------------------------------------------------------
 
 /// 处理新游戏动作事件，生成地图并开始游戏
+#[allow(clippy::too_many_arguments)] // Bevy 系统的标准 pattern
+#[allow(clippy::explicit_auto_deref)] // &mut *res 是把 ResMut<T> 借成 &mut T 的惯用写法，自动解引用不会在这里发生
 fn handle_new_game_actions(
     mut commands: Commands,
     mut action_events: EventReader<NewGameAction>,
@@ -749,11 +751,9 @@ fn render_map_debug(
             if let Ok(t) = camera_query.get_single() {
                 ui.label(format!("相机: ({:.1}, {:.1})", t.translation.x, t.translation.y));
             }
-            if let Ok(p) = projection_query.get_single() {
-                if let Projection::Orthographic(ortho) = p {
-                    let zoom = 1.0 / ortho.scale;
-                    ui.label(format!("缩放: {:.2}, zoom: {:.4}", ortho.scale, zoom));
-                }
+            if let Ok(Projection::Orthographic(ortho)) = projection_query.get_single() {
+                let zoom = 1.0 / ortho.scale;
+                ui.label(format!("缩放: {:.2}, zoom: {:.4}", ortho.scale, zoom));
             }
 
             // Chunk
@@ -919,6 +919,7 @@ fn handle_hex_right_click(
 /// 用途快速判断：
 /// - 「事件被吞」：is_using_pointer=true 时左键 just_pressed=false
 /// - 「坐标错误」：egui 坐标与 hex_pick 坐标不一致
+#[allow(clippy::manual_is_multiple_of)] // 调试用系统：保留 % 60 让语义对开发者更直观
 fn input_diagnostics(
     mut contexts: EguiContexts,
     mouse_button: Res<ButtonInput<MouseButton>>,

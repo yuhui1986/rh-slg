@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 
 use crate::map::grid::HexCoord;
 use crate::map::tile::TerrainType;
-use noise::{NoiseFn, OpenSimplex, Simplex, Seedable};
+use noise::{NoiseFn, Simplex};
 use rand::Rng;
 use rand::SeedableRng;
 use rand_chacha::ChaCha12Rng;
@@ -184,7 +184,6 @@ pub fn generate_temperaturemap(seed: u64, width: u32, height: u32, heightmap: &[
 
     let noise_gen = Simplex::new(noise_seed.wrapping_add(200));
 
-    let scale_x = width as f64;
     let scale_y = height as f64;
     let mut temperature = vec![0.0f64; (width * height) as usize];
 

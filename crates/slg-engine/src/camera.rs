@@ -43,8 +43,6 @@ impl Plugin for CameraPlugin {
 
 /// 相机平移速度（像素/秒，基准值，实际速度乘以 zoom）
 const PAN_SPEED: f32 = 500.0;
-/// 边缘滚屏触发距离（像素）
-const EDGE_SCROLL_DISTANCE: f32 = 50.0;
 /// 最小缩放：ortho.scale 的下限，最大放大（看清单格）。语义：scale 不能小于此值。
 pub const MIN_ZOOM: f32 = 0.05;
 /// 最大缩放：ortho.scale 的上限，最大放远（看全图）。语义：scale 不能大于此值。
@@ -444,7 +442,7 @@ fn mouse_button_diagnostic(
 
     // 每 60 帧或状态变化时输出
     *frame_counter += 1;
-    let should_log = *frame_counter % 60 == 0 || left_changed || right_changed;
+    let should_log = (*frame_counter).is_multiple_of(60) || left_changed || right_changed;
 
     if should_log && std::env::var("HEX_PICK_DEBUG").as_deref() == Ok("1") {
         info!(

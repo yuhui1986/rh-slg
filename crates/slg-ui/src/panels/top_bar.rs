@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
 
 /// 顶部栏组件
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct TopBarState {
     pub gold: u64,
     pub food: u64,
@@ -14,21 +14,6 @@ pub struct TopBarState {
     pub tick: u64,
     pub speed: String,
     pub show: bool,
-}
-
-impl Default for TopBarState {
-    fn default() -> Self {
-        Self {
-            gold: 0,
-            food: 0,
-            wood: 0,
-            iron: 0,
-            stone: 0,
-            tick: 0,
-            speed: String::new(),
-            show: false,
-        }
-    }
 }
 
 /// 渲染顶部资源栏（仅在游戏进行中显示）

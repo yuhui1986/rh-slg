@@ -104,8 +104,10 @@ mod tests {
 
     #[test]
     fn test_game_days() {
-        let mut stats = GameStatistics::default();
-        stats.total_ticks = 150;
+        let stats = GameStatistics {
+            total_ticks: 150,
+            ..Default::default()
+        };
         assert_eq!(stats.game_days(), 15);
     }
 
