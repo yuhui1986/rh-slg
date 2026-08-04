@@ -864,6 +864,7 @@ fn render_editor_return(
 }
 
 /// 地图调试信息（临时，用于排查渲染问题）
+#[allow(clippy::too_many_arguments)] // 调试面板：参数都是只读 Resource / Query，独立运行时无副作用
 fn render_map_debug(
     mut contexts: EguiContexts,
     game_state: Res<GameState>,
@@ -872,6 +873,8 @@ fn render_map_debug(
     projection_query: Query<&Projection, With<Camera2d>>,
     pick_result: Res<slg_engine::camera::HexPickResult>,
     mouse_button: Res<ButtonInput<MouseButton>>,
+    main_city_markers: Query<(&MainCityMarker, &Transform)>,
+    faction_res: Res<FactionStoreResource>,
 ) {
     if game_state.phase != GamePhase::Playing {
         return;
@@ -914,6 +917,34 @@ fn render_map_debug(
             // 第一个chunk LOD
             if let Some(chunk) = chunk_query.iter().next() {
                 ui.label(format!("Chunk(0,0) LOD={}, dirty={}", chunk.current_lod, chunk.dirty));
+            }
+
+            ui.separator();
+            ui.label("─── 主城 ───");
+            // 主城 marker 数 + 每个的坐标（用来核对"只看到 5 个"是哪 5 个）
+            let mut city_lines: Vec<String> = Vec::new();
+            city_lines.push(format!("主城 marker 总数: {} (期望 6)", main_city_markers.iter().count()));
+            for (marker, t) in main_city_markers.iter() {
+                city_lines.push(format!(
+                    "  • {} @ ({:.1}, {:.1})",
+                    marker.faction_id,
+                    t.translation.x,
+                    t.translation.y
+                ));
+            }
+            // 玩家势力 + 主城坐标（期望玩家 ID = FactionIdMap.get(6) 的 key）
+            if let Some(player_faction) = faction_res.store.factions.get(&game_state.player_faction_id) {
+                if let Some(mc) = player_faction.main_city {
+                    city_lines.push(format!(
+                        "玩家 {} 主城 hex=({}, {})",
+                        game_state.player_faction_id,
+                        mc.q,
+                        mc.r
+                    ));
+                }
+            }
+            for line in city_lines {
+                ui.label(line);
             }
 
             ui.separator();
