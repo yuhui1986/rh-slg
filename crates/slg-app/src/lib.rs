@@ -53,6 +53,24 @@ pub struct TerrainMapResource {
     pub map: BTreeMap<TileKey, TerrainType>,
 }
 
+/// 全局行军管理器 Resource：所有活跃 MarchOrder + ID 分配器
+///
+/// 派兵 / 推进 / 取消 / 锁定查询都走这个。
+/// 纯 slg-core 数据 + Bevy Resource 包装，零引擎逻辑。
+#[derive(Debug, Clone, Default, Resource)]
+pub struct MarchManagerResource {
+    pub manager: slg_core::military::MarchManager,
+}
+
+/// 行军视觉 component：每个活跃 MarchOrder 对应一个 entity
+///
+/// sprite 位置 = lerp(from, to, march_manager.orders[id].progress(current_tick))
+/// march_id 用来从 MarchManager 查 order
+#[derive(Component)]
+struct MarchVisual {
+    march_id: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Steam 初始化
 // ---------------------------------------------------------------------------
@@ -101,6 +119,7 @@ impl Plugin for SlgAppPlugin {
             .init_resource::<TerritoryManagerResource>()
             .init_resource::<FactionIdMap>()
             .init_resource::<TerrainMapResource>()
+            .init_resource::<MarchManagerResource>()
             // 启动系统：生成地图、初始化势力
             .add_systems(Startup, setup_game)
             // 主菜单动作处理 + 地图点击
@@ -120,6 +139,8 @@ impl Plugin for SlgAppPlugin {
             .add_systems(Update, input_diagnostics)
             // 点击涟漪生命周期
             .add_systems(Update, update_click_rings)
+            // 行军 sprite 插值移动（每帧）
+            .add_systems(Update, march_sprite_system)
             // 游戏循环系统：在 tick_dispatcher 之后运行
             .add_systems(
                 Update,
@@ -726,12 +747,17 @@ fn handle_game_over_actions(
 ///
 /// 在 tick_dispatcher 之后运行，检测新 tick 并执行游戏逻辑。
 /// tick_dispatcher 负责时钟推进，本系统负责游戏逻辑处理。
+#[allow(clippy::too_many_arguments)] // Bevy 系统的标准 pattern：每个 Resource / Query 一个参数
 fn process_tick_phases(
     clock_res: Res<GameClockResource>,
     mut faction_res: ResMut<FactionStoreResource>,
     mut command_res: ResMut<slg_engine::systems::CommandQueueResource>,
     mut territory_res: ResMut<TerritoryManagerResource>,
+    mut march_res: ResMut<MarchManagerResource>,
+    faction_id_map: Res<FactionIdMap>,
+    terrain_map: Res<TerrainMapResource>,
     mut game_state: ResMut<GameState>,
+    mut chunk_query: Query<&mut EngineChunkData>,
 ) {
     // 只在游戏进行中处理 tick
     if game_state.phase != GamePhase::Playing {
@@ -766,6 +792,46 @@ fn process_tick_phases(
                         faction.resources.food += 5;
                     }
                 }
+                TickPhase::MarchAdvance => {
+                    // 行军推进：检查到达、触发 occupy、清理已完成的
+                    let arrivals = march_res.manager.advance_all(game_state.tick);
+                    for arrival in arrivals {
+                        // 到达：再 check 一次 can_occupy（行军期间可能被 NPC 抢了）
+                        let can = territory_res.manager.can_occupy(
+                            arrival.to,
+                            &arrival.faction_id,
+                            &terrain_map.map,
+                        );
+                        if can {
+                            territory_res.manager.occupy(arrival.to, &arrival.faction_id);
+                            // 同步 chunk owner
+                            let cx = arrival.to.q / 32;
+                            let cy = arrival.to.r / 32;
+                            let lx = (arrival.to.q % 32) as usize;
+                            let ly = (arrival.to.r % 32) as usize;
+                            let local_idx = ly * 32 + lx;
+                            let color_idx = faction_id_map.get(&arrival.faction_id);
+                            for mut chunk in chunk_query.iter_mut() {
+                                if chunk.chunk_x == cx && chunk.chunk_y == cy {
+                                    chunk.owners[local_idx] = color_idx;
+                                    chunk.dirty = true;
+                                    break;
+                                }
+                            }
+                            info!(
+                                "[MarchAdvance] ✅ 到达占地: ({}, {}) → {}",
+                                arrival.to.q, arrival.to.r, arrival.faction_id
+                            );
+                        } else {
+                            info!(
+                                "[MarchAdvance] ❌ 到达但无法占地（被先占）: ({}, {})",
+                                arrival.to.q, arrival.to.r
+                            );
+                            march_res.manager.fail(arrival.id);
+                        }
+                    }
+                    march_res.manager.cleanup_finished();
+                }
                 TickPhase::AIDecision => {
                     // AI 决策（错峰）
                     for (i, (_faction_id, _faction)) in
@@ -778,8 +844,8 @@ fn process_tick_phases(
                     }
                 }
                 _ => {
-                    // 其他阶段：BuildQueue, Recruitment, MarchAdvance,
-                    // CombatResolution, TerritoryUpdate, TickEnd
+                    // 其他阶段：BuildQueue, Recruitment, CombatResolution,
+                    // TerritoryUpdate, TickEnd
                     // 简化实现，后续迭代填充
                 }
             }
@@ -811,6 +877,7 @@ fn update_ui_state(
     game_state: Res<GameState>,
     clock_res: Res<GameClockResource>,
     faction_res: Res<FactionStoreResource>,
+    march_res: Res<MarchManagerResource>,
     mut top_bar: ResMut<slg_ui::panels::top_bar::TopBarState>,
 ) {
     // 控制顶栏显示/隐藏
@@ -830,6 +897,41 @@ fn update_ui_state(
     }
     top_bar.tick = game_state.tick;
     top_bar.speed = format!("{:?}", clock_res.clock.speed);
+    top_bar.marching_count = march_res.manager.active().count() as u32;
+}
+
+/// 更新行军 sprite 位置（每帧插值）
+///
+/// 从 MarchManager 读 progress，把 MarchVisual entity 的 transform.translation
+/// 插值到 lerp(from, to, progress)。
+///
+/// 到达 / 失败 / 取消的 MarchOrder 会被 `march_advance_system` 或 cancel 改成
+/// 非 Marching 状态，这里查到 status != Marching 就 despawn sprite。
+fn march_sprite_system(
+    clock_res: Res<GameClockResource>,
+    march_res: Res<MarchManagerResource>,
+    mut query: Query<(Entity, &MarchVisual, &mut Transform)>,
+    mut commands: Commands,
+) {
+    let current_tick = clock_res.clock.current_tick;
+    for (entity, visual, mut transform) in query.iter_mut() {
+        // 从 manager 查 order 状态
+        let order_info = march_res.manager.orders.get(&visual.march_id);
+        match order_info {
+            Some(order) if order.status == slg_core::military::MarchStatus::Marching => {
+                // 插值位置 = lerp(from_world, to_world, progress)
+                let from_world = slg_engine::camera::hex_world_position(order.from);
+                let to_world = slg_engine::camera::hex_world_position(order.to);
+                let t = order.progress(current_tick);
+                transform.translation.x = from_world.x + (to_world.x - from_world.x) * t;
+                transform.translation.y = from_world.y + (to_world.y - from_world.y) * t;
+            }
+            _ => {
+                // 到达 / 取消 / 失败：despawn sprite
+                commands.entity(entity).despawn();
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -993,9 +1095,9 @@ fn handle_hex_click(
     mut click_events: EventReader<HexClickEvent>,
     game_state: Res<GameState>,
     mut territory_res: ResMut<TerritoryManagerResource>,
-    faction_id_map: Res<FactionIdMap>,
+    mut march_res: ResMut<MarchManagerResource>,
     terrain_map: Res<TerrainMapResource>,
-    mut chunk_query: Query<&mut EngineChunkData>,
+    clock_res: Res<slg_engine::systems::GameClockResource>,
 ) {
     for event in click_events.read() {
         let coord = event.coord;
@@ -1015,39 +1117,74 @@ fn handle_hex_click(
 
         match game_state.phase {
             GamePhase::Playing => {
-                // **核心 SLG 循环：左键 → 占地**
+                // **核心 SLG 循环：左键 → 派兵（行军）→ 到达 → 占地**
+                // 之前是直接 occupy（瞬时），现在改成派兵走完才落地。
                 let player_fid = game_state.player_faction_id.clone();
                 let can = territory_res
                     .manager
                     .can_occupy(coord, &player_fid, &terrain_map.map);
-                if can {
-                    territory_res.manager.occupy(coord, &player_fid);
-                    // 同步更新对应 chunk 的 owners 数组并标 dirty
-                    let cx = coord.q / 32;
-                    let cy = coord.r / 32;
-                    let lx = (coord.q % 32) as usize;
-                    let ly = (coord.r % 32) as usize;
-                    let local_idx = ly * 32 + lx;
-                    let color_idx = faction_id_map.get(&player_fid);
-                    for mut chunk in chunk_query.iter_mut() {
-                        if chunk.chunk_x == cx && chunk.chunk_y == cy {
-                            chunk.owners[local_idx] = color_idx;
-                            chunk.dirty = true;
-                            break;
-                        }
-                    }
-                    info!(
-                        "[Playing] ✅ 占地成功: ({}, {}) → 玩家 ({}) color_idx={}",
-                        coord.q, coord.r, player_fid, color_idx
-                    );
-                } else {
-                    // 不能占地（不是邻接 / 已是自己 / 是水域）
+                if !can {
                     let owner = territory_res.manager.owner_map.get(&coord.to_tile_key());
                     info!(
-                        "[Playing] ❌ 不能占地: ({}, {}), 当前归属={:?}",
+                        "[Playing] ❌ 不能派兵: ({}, {}), 当前归属={:?}",
                         coord.q, coord.r, owner
                     );
+                    continue;
                 }
+
+                // 目标格是否已被另一支行军锁住？
+                if march_res.manager.is_target_locked(coord) {
+                    info!(
+                        "[Playing] ❌ 目标已被行军锁住: ({}, {})",
+                        coord.q, coord.r
+                    );
+                    continue;
+                }
+
+                // 派出：从最近的主城出发
+                // MVP 简化：从玩家主城出发；M1 改成从当前最前线的己方格出发
+                let from = match territory_res.manager.main_cities.get(&player_fid) {
+                    Some(&c) => c,
+                    None => {
+                        warn!("[Playing] 玩家 {} 没有主城，无法派兵", player_fid);
+                        continue;
+                    }
+                };
+
+                let order = march_res.manager.dispatch(
+                    player_fid.clone(),
+                    from,
+                    coord,
+                    slg_core::military::TROOPS_PER_MARCH,
+                    clock_res.clock.current_tick,
+                );
+
+                // 同步更新目标格 chunks：先 lock（用玩家色 + 标记行军中）
+                // MVP 简化：先不变色，等到达再 occupy。
+                // 后续加：目标格显示"行军中"半透明覆盖。
+
+                // spawn 行军视觉（sprite 从 from 沿路径插值飞到 to）
+                let from_world = slg_engine::camera::hex_world_position(from);
+                let visual_entity = commands.spawn((
+                    Sprite {
+                        color: Color::srgba(1.0, 0.84, 0.0, 1.0), // 黄金 = 玩家
+                        custom_size: Some(Vec2::new(
+                            slg_engine::render::chunk_mesh::HEX_SIZE * 0.8,
+                            slg_engine::render::chunk_mesh::HEX_SIZE * 0.8,
+                        )),
+                        ..default()
+                    },
+                    Transform::from_translation(Vec3::new(from_world.x, from_world.y, 2.0)),
+                    MarchVisual { march_id: order.id },
+                )).id();
+
+                info!(
+                    "[Playing] 🪖 派兵: id={} from=({},{}) to=({},{}) arrive_tick={}",
+                    order.id, from.q, from.r, coord.q, coord.r, order.arrive_tick
+                );
+
+                // 暂时 unused warning 防止：visual_entity 留作后续
+                let _ = visual_entity;
             }
             GamePhase::Editor => {
                 info!("[Editor] 点击地块 ({}, {})", coord.q, coord.r);

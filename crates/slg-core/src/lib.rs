@@ -9,6 +9,7 @@ pub mod entity;
 pub mod event;
 pub mod gen;
 pub mod map;
+pub mod military;
 pub mod resource;
 pub mod rule;
 pub mod save_manager;

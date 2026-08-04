@@ -14,6 +14,8 @@ pub struct TopBarState {
     pub tick: u64,
     pub speed: String,
     pub show: bool,
+    /// 玩家当前行军中的队伍数
+    pub marching_count: u32,
 }
 
 /// 渲染顶部资源栏（仅在游戏进行中显示）
@@ -39,6 +41,8 @@ pub fn render_top_bar(mut contexts: EguiContexts, state: Res<TopBarState>) {
             ui.label(format!("\u{23f1} Tick: {}", state.tick));
             ui.separator();
             ui.label(format!("\u{23e9} {}", state.speed));
+            ui.separator();
+            ui.label(format!("\u{1f3c3} 行军: {}", state.marching_count));
         });
     });
 }
