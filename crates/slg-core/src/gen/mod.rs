@@ -296,12 +296,18 @@ fn build_entity_layer(spawns: &[spawn::SpawnPoint]) -> EntityLayer {
     for s in spawns {
         let key: TileKey = s.coord.to_tile_key();
         let mut props = BTreeMap::new();
+        // faction_id 用 1-indexed（faction_1 ~ faction_6），与 loader 的
+        // FactionStore 默认势力（loader.rs `for i in 1..=6u8`）保持一致
+        //
+        // 历史上曾用 0-indexed（faction_0 ~ faction_5），导致 spawn faction_0
+        // 的出生点在 `FactionStore.get_mut("faction_0")` 时返回 None，main_city
+        // 设不进去——玩家主城永远缺失一个。
         props.insert("faction_index".to_string(), s.faction_index.to_string());
         placements.insert(
             key,
             EntityPlacement {
                 entity_type: "spawn".to_string(),
-                faction_id: Some(format!("faction_{}", s.faction_index)),
+                faction_id: Some(format!("faction_{}", s.faction_index + 1)),
                 properties: props,
             },
         );
@@ -435,6 +441,33 @@ mod tests {
             assert!(c.r >= 0 && c.r < preset.height as i32, "r out of range: {}", c.r);
         }
         assert_eq!(doc.entities.placements.len(), 6, "expected 6 spawns");
+
+        // 回归：spawn faction_id 必须是 1-indexed（faction_1 ~ faction_6）
+        // 与 loader.rs 的 FactionStore 默认势力 ID 对齐
+        // BTreeMap 按 key 排序迭代，所以不能按 enumerate 顺序断言
+        let mut faction_ids: Vec<String> = doc
+            .entities
+            .placements
+            .values()
+            .filter_map(|p| p.faction_id.clone())
+            .collect();
+        faction_ids.sort();
+        let expected: Vec<String> = (1..=6u8).map(|i| format!("faction_{i}")).collect();
+        assert_eq!(
+            faction_ids, expected,
+            "spawn faction_id 应为 1-indexed (faction_1~faction_6)"
+        );
+
+        // 同样：properties.faction_index 应是 0-indexed (0~5)
+        let mut indices: Vec<u32> = doc
+            .entities
+            .placements
+            .values()
+            .filter_map(|p| p.properties.get("faction_index").and_then(|s| s.parse().ok()))
+            .collect();
+        indices.sort();
+        let expected_idx: Vec<u32> = (0..6).collect();
+        assert_eq!(indices, expected_idx, "properties.faction_index 应为 0-indexed (0~5)");
     }
 
     /// 输出地图无大面积水域死区（陆地占比 > 60%）
