@@ -17,3 +17,4 @@ pub mod rule;
 pub mod save_manager;
 pub mod scenario_loader;
 pub mod statistics;
+pub mod victory;

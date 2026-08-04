@@ -151,6 +151,8 @@ impl Plugin for SlgAppPlugin {
             .add_systems(Update, update_click_rings)
             // 行军 sprite 插值移动（每帧）
             .add_systems(Update, march_sprite_system)
+            // 胜利/失败检查（每帧 game phase = Playing 时跑）
+            .add_systems(Update, check_victory_system)
             // 游戏循环系统：在 tick_dispatcher 之后运行
             .add_systems(
                 Update,
@@ -243,7 +245,7 @@ impl Default for GameState {
 }
 
 /// 游戏阶段
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq, Debug, Clone, Copy)]
 pub enum GamePhase {
     #[default]
     Menu,
@@ -960,6 +962,63 @@ fn update_ui_state(
     top_bar.marching_count = march_res.manager.active().count() as u32;
 }
 
+/// 检查胜利/失败条件
+///
+/// 每 tick 调用：检查玩家主城是否被推、玩家占地比例是否达阈值。
+/// 触发时设 `game_state.phase = GamePhase::GameOver` + 设置 GameOverState。
+fn check_victory_system(
+    mut game_state: ResMut<GameState>,
+    faction_res: Res<FactionStoreResource>,
+    territory_res: Res<TerritoryManagerResource>,
+    terrain_map: Res<TerrainMapResource>,
+    mut game_over_state: ResMut<slg_ui::panels::game_over::GameOverState>,
+    clock_res: Res<slg_engine::systems::GameClockResource>,
+) {
+    if game_state.phase != GamePhase::Playing {
+        return;
+    }
+
+    let player_faction = game_state.player_faction_id.clone();
+    let Some(faction) = faction_res.store.factions.get(&player_faction) else {
+        return;
+    };
+    let Some(main_city) = faction.main_city else {
+        return;
+    };
+
+    let reason = slg_core::victory::check_victory_and_defeat(
+        main_city,
+        &territory_res.manager.owner_map,
+        &terrain_map.map,
+        &player_faction,
+        slg_core::victory::DEFAULT_VICTORY_RATIO,
+    );
+
+    if let Some(reason) = reason {
+        let is_victory = reason.is_victory();
+        let reason_text = reason.reason_text();
+        // 只在第一次触发时 log
+        if !game_over_state.show {
+            info!(
+                "🎮 GameOver 触发: {} (tick={})",
+                reason_text, clock_res.clock.current_tick
+            );
+        }
+        game_over_state.show = true;
+        game_over_state.is_victory = is_victory;
+        game_over_state.reason = reason_text;
+        // 玩家占地数填 statistics
+        let tiles_occupied: u32 = territory_res
+            .manager
+            .owner_map
+            .values()
+            .filter(|f| f == &&player_faction)
+            .count() as u32;
+        game_over_state.statistics.tiles_occupied = tiles_occupied;
+        game_state.phase = GamePhase::GameOver;
+    }
+}
+
 /// 揭开若干 hex 并同步到对应 chunk 的 fog 数组 + 标 dirty
 ///
 /// 流程：
@@ -1468,6 +1527,7 @@ mod bevy_tests {
         app.init_resource::<TileResourceMap>();
         app.init_resource::<slg_engine::systems::GameClockResource>();
         app.init_resource::<slg_engine::systems::CommandQueueResource>();
+        app.init_resource::<slg_ui::panels::game_over::GameOverState>();
         app
     }
 
@@ -1855,6 +1915,100 @@ mod bevy_tests {
             delta
         );
         eprintln!("TEST6 ✅: 派兵落地后圈地扩大, 资源产出翻倍");
+    }
+
+    /// 测试 7：玩家主城被 NPC 推 → check_victory_system 触发 Defeat
+    #[test]
+    fn bevy_check_defeat_triggers_gameover() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+
+        // 把玩家主城 (68, 65) 的 owner 改成 faction_2
+        {
+            let mut tm = app.world_mut().resource_mut::<TerritoryManagerResource>();
+            tm.manager
+                .owner_map
+                .insert(HexCoord::new(68, 65).to_tile_key(), "faction_2".to_string());
+        }
+
+        app.add_systems(Update, check_victory_system);
+        app.update();
+
+        // 验证：game_state.phase = GameOver
+        let gs = app.world().resource::<GameState>();
+        assert_eq!(
+            gs.phase,
+            GamePhase::GameOver,
+            "主城被推应触发 GameOver"
+        );
+        let gos = app.world().resource::<slg_ui::panels::game_over::GameOverState>();
+        assert!(gos.show, "GameOverState.show 应为 true");
+        assert!(!gos.is_victory, "主城被推是 Defeat");
+        assert!(gos.reason.contains("主城"), "reason 应提到主城: {}", gos.reason);
+        eprintln!("TEST7 ✅: 主城被推触发 Defeat GameOver");
+    }
+
+    /// 测试 8：玩家占地 ≥ 50% → check_victory_system 触发 Victory
+    #[test]
+    fn bevy_check_victory_triggers_gameover() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+
+        // 让玩家占所有 non-water 格：先 clear owner_map，再 occupy 10000 个 plains
+        // 简单做法：直接 fake：把 threshold 调到极低 (0.01) 让 1 格就胜利
+        // 但 check_victory_system 用 DEFAULT_VICTORY_RATIO (0.5)，改不了
+        // 改用：让玩家占多数
+        // terrain_map 有 128*128 = 16384 格，玩家主城 1 格 -> 0.006% < 50%
+        // 改 terrain_map 只剩 2 格，玩家占 1 格 = 50% 胜利
+        {
+            let mut tm = app.world_mut().resource_mut::<TerrainMapResource>();
+            tm.map.clear();
+            tm.map.insert(HexCoord::new(0, 0).to_tile_key(), TerrainType::Plains);
+            tm.map.insert(HexCoord::new(1, 0).to_tile_key(), TerrainType::Plains);
+        }
+        // 玩家占 2 格 (主城 + 邻接)
+        {
+            let mut ttm = app.world_mut().resource_mut::<TerritoryManagerResource>();
+            ttm.manager
+                .owner_map
+                .insert(HexCoord::new(0, 0).to_tile_key(), "faction_1".to_string());
+            ttm.manager
+                .owner_map
+                .insert(HexCoord::new(1, 0).to_tile_key(), "faction_1".to_string());
+        }
+
+        app.add_systems(Update, check_victory_system);
+        app.update();
+
+        let gs = app.world().resource::<GameState>();
+        assert_eq!(
+            gs.phase,
+            GamePhase::GameOver,
+            "玩家 100% 占地应触发 GameOver"
+        );
+        let gos = app.world().resource::<slg_ui::panels::game_over::GameOverState>();
+        assert!(gos.show);
+        assert!(gos.is_victory, "100% 占地是 Victory");
+        assert!(gos.reason.contains("统一天下"), "reason: {}", gos.reason);
+        eprintln!("TEST8 ✅: 100% 占地触发 Victory GameOver");
+    }
+
+    /// 测试 9：没触发条件时 game phase 保持 Playing
+    #[test]
+    fn bevy_no_victory_no_defeat_phase_unchanged() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+
+        // 玩家只占主城 1 格，terrain 128x128 -> 0.006% < 50%
+        // 主城没被推
+        app.add_systems(Update, check_victory_system);
+        app.update();
+
+        let gs = app.world().resource::<GameState>();
+        assert_eq!(gs.phase, GamePhase::Playing, "应保持 Playing");
+        let gos = app.world().resource::<slg_ui::panels::game_over::GameOverState>();
+        assert!(!gos.show, "GameOverState.show 应为 false");
+        eprintln!("TEST9 ✅: 无条件触发时 phase 不变");
     }
 }
 
