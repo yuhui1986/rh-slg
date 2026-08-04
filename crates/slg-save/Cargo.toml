@@ -1,0 +1,12 @@
+[package]
+name = "slg-save"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+slg-data = { path = "../slg-data" }
+bincode = "1.3"
+zstd = "0.13"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+crc32fast = "1"

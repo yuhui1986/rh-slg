@@ -1,0 +1,70 @@
+// 地形类型定义表（完整数据）
+// 字段与 slg-data config.rs TerrainTypeDef 完全对齐
+// 8 种地形：平原、山地、水域、森林、沙漠、沼泽、丘陵、关隘
+
+[
+    (
+        id: "terrain_plains",
+        name: "平原",
+        movement_cost: 1.0,
+        defense_bonus: 0.0,
+        passable: true,
+        buildable: true,
+    ),
+    (
+        id: "terrain_mountain",
+        name: "山地",
+        movement_cost: 3.0,
+        defense_bonus: 0.3,
+        passable: true,
+        buildable: false,
+    ),
+    (
+        id: "terrain_water",
+        name: "水域",
+        movement_cost: 1.0,
+        defense_bonus: 0.0,
+        passable: false,
+        buildable: false,
+    ),
+    (
+        id: "terrain_forest",
+        name: "森林",
+        movement_cost: 1.5,
+        defense_bonus: 0.15,
+        passable: true,
+        buildable: true,
+    ),
+    (
+        id: "terrain_desert",
+        name: "沙漠",
+        movement_cost: 1.5,
+        defense_bonus: -0.1,
+        passable: true,
+        buildable: false,
+    ),
+    (
+        id: "terrain_swamp",
+        name: "沼泽",
+        movement_cost: 2.0,
+        defense_bonus: 0.1,
+        passable: true,
+        buildable: false,
+    ),
+    (
+        id: "terrain_hills",
+        name: "丘陵",
+        movement_cost: 1.5,
+        defense_bonus: 0.2,
+        passable: true,
+        buildable: true,
+    ),
+    (
+        id: "terrain_pass",
+        name: "关隘",
+        movement_cost: 1.0,
+        defense_bonus: 0.5,
+        passable: true,
+        buildable: true,
+    ),
+]

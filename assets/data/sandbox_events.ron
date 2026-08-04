@@ -1,0 +1,167 @@
+// 沙盒动态事件定义
+// 每个事件包含：类别、名称、描述、触发条件、效果
+// 事件类别与 EventCategory 枚举对应：Disaster, Rebellion, FamousGeneral, TradeRoute, Weather, Diplomatic
+
+[
+    // === 天灾事件 (Disaster) ===
+    (
+        id: "sandbox_drought",
+        name: "旱灾",
+        description: "持续旱灾导致粮食减产，所有势力粮食产出降低 50%，持续 20 tick。",
+        category: Disaster,
+        trigger_condition: (RandomChance: (probability: 0.1, cooldown_ticks: 100)),
+        effects: [
+            (ResourceModifier: { resource: "food", factor: 0.5, duration_ticks: 20 }),
+        ],
+    ),
+    (
+        id: "sandbox_flood",
+        name: "洪水",
+        description: "暴雨引发洪水，低洼地区被淹没，部分格子变为水域。",
+        category: Disaster,
+        trigger_condition: (RandomChance: (probability: 0.05, cooldown_ticks: 150)),
+        effects: [
+            (ModifyTerrain: { terrain: "water", radius: 3 }),
+        ],
+    ),
+    (
+        id: "sandbox_plague",
+        name: "瘟疫",
+        description: "瘟疫蔓延，部队士气大幅下降。",
+        category: Disaster,
+        trigger_condition: (RandomChance: (probability: 0.03, cooldown_ticks: 200)),
+        effects: [
+            (MoraleModifier: { factor: 0.3, duration_ticks: 30 }),
+        ],
+    ),
+
+    // === 叛乱事件 (Rebellion) ===
+    (
+        id: "sandbox_rebellion",
+        name: "领地叛乱",
+        description: "不满的民众发动叛乱，随机位置出现敌对部队。",
+        category: Rebellion,
+        trigger_condition: (RandomChance: (probability: 0.08, cooldown_ticks: 80)),
+        effects: [
+            (SpawnRebels: { count: 200, duration_ticks: 15 }),
+        ],
+    ),
+    (
+        id: "sandbox_mutiny",
+        name: "军队哗变",
+        description: "长期征战导致军队哗变，部分部队脱离控制。",
+        category: Rebellion,
+        trigger_condition: (RandomChance: (probability: 0.05, cooldown_ticks: 120)),
+        effects: [
+            (DesertTroops: { ratio: 0.1 }),
+        ],
+    ),
+
+    // === 名将出世事件 (FamousGeneral) ===
+    (
+        id: "sandbox_famous_general",
+        name: "名将出世",
+        description: "一位名将出现在某城池，可招募。",
+        category: FamousGeneral,
+        trigger_condition: (RandomChance: (probability: 0.1, cooldown_ticks: 100)),
+        effects: [
+            (SpawnGeneral: { general_pool: ["general_random_1", "general_random_2"] }),
+        ],
+    ),
+    (
+        id: "sandbox_wanderer_general",
+        name: "游侠来投",
+        description: "一位游侠慕名来投，可直接加入势力。",
+        category: FamousGeneral,
+        trigger_condition: (RandomChance: (probability: 0.06, cooldown_ticks: 120)),
+        effects: [
+            (SpawnGeneral: { general_pool: ["general_wanderer_1", "general_wanderer_2"] }),
+        ],
+    ),
+
+    // === 商路事件 (TradeRoute) ===
+    (
+        id: "sandbox_trade_route",
+        name: "商路畅通",
+        description: "商路畅通，金币产出增加 30%，持续 30 tick。",
+        category: TradeRoute,
+        trigger_condition: (RandomChance: (probability: 0.15, cooldown_ticks: 60)),
+        effects: [
+            (ResourceModifier: { resource: "gold", factor: 1.3, duration_ticks: 30 }),
+        ],
+    ),
+    (
+        id: "sandbox_trade_disrupted",
+        name: "商路中断",
+        description: "盗匪横行导致商路中断，金币产出降低 30%。",
+        category: TradeRoute,
+        trigger_condition: (RandomChance: (probability: 0.08, cooldown_ticks: 80)),
+        effects: [
+            (ResourceModifier: { resource: "gold", factor: 0.7, duration_ticks: 20 }),
+        ],
+    ),
+
+    // === 天气事件 (Weather) ===
+    (
+        id: "sandbox_storm",
+        name: "暴风雨",
+        description: "暴风雨来袭，行军速度降低 50%。",
+        category: Weather,
+        trigger_condition: (RandomChance: (probability: 0.1, cooldown_ticks: 50)),
+        effects: [
+            (MovementModifier: { factor: 0.5, duration_ticks: 10 }),
+        ],
+    ),
+    (
+        id: "sandbox_fog",
+        name: "大雾弥漫",
+        description: "大雾弥漫，视野范围大幅缩小。",
+        category: Weather,
+        trigger_condition: (RandomChance: (probability: 0.08, cooldown_ticks: 60)),
+        effects: [
+            (VisionModifier: { factor: 0.3, duration_ticks: 8 }),
+        ],
+    ),
+    (
+        id: "sandbox_heatwave",
+        name: "酷暑",
+        description: "酷暑难耐，部队体力消耗加快。",
+        category: Weather,
+        trigger_condition: (RandomChance: (probability: 0.07, cooldown_ticks: 70)),
+        effects: [
+            (StaminaModifier: { factor: 0.6, duration_ticks: 15 }),
+        ],
+    ),
+
+    // === 外交事件 (Diplomatic) ===
+    (
+        id: "sandbox_alliance",
+        name: "势力结盟",
+        description: "两个 AI 势力自动结盟。",
+        category: Diplomatic,
+        trigger_condition: (RandomChance: (probability: 0.05, cooldown_ticks: 150)),
+        effects: [
+            (AutoAlliance: { min_relation: 50 }),
+        ],
+    ),
+    (
+        id: "sandbox_betrayal",
+        name: "背信弃义",
+        description: "某势力背弃盟约，突然宣战。",
+        category: Diplomatic,
+        trigger_condition: (RandomChance: (probability: 0.04, cooldown_ticks: 180)),
+        effects: [
+            (BreakAlliance: { relation_drop: 30 }),
+        ],
+    ),
+    (
+        id: "sandbox_trade_agreement",
+        name: "通商协议",
+        description: "两势力达成通商协议，双方金币产出增加 15%。",
+        category: Diplomatic,
+        trigger_condition: (RandomChance: (probability: 0.06, cooldown_ticks: 100)),
+        effects: [
+            (TradeAgreement: { bonus: 0.15, duration_ticks: 40 }),
+        ],
+    ),
+]

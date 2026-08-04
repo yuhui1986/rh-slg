@@ -1,0 +1,41 @@
+# ============================================================
+# 《天下策》(rh-slg) .gitignore
+# ============================================================
+
+# Rust 构建产物
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+$RECYCLE.BIN/
+
+# 玩家运行时数据（不要入库）
+user/
+
+# Mods 目录：用 .gitkeep 占位追踪目录本身，mod 实际内容不进库
+mods/*
+!mods/.gitkeep
+
+# 本地日志
+*.log
+target/*.log
+
+# Claude / AI agent 调试残留（保留 .claude/agents/ 源代码）
+.claude/cache/
+.claude/state/

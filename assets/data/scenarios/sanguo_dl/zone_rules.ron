@@ -1,0 +1,122 @@
+// 三国鼎立剧本区域规则定义
+// 对应 Rust 类型: Vec<ZoneRule> (见 crates/slg-core/src/rule/zone_rule.rs)
+// ZoneRule 字段: zone_id (String), tiles (BTreeSet<TileKey>), effects (Vec<ZoneEffect>), active (bool)
+// TileKey = u64, 由 (q, r) 编码: ((r << 32) | q)
+// 注: ZoneRule 结构体不含 name 字段，区域名称以注释形式标注。
+
+[
+    // ---- 洛阳: 资源丰富，防御加成高 ----
+    (
+        zone_id: "zone_luoyang",
+        tiles: [
+            // (127, 79) (128, 79) (129, 79)
+            // (127, 80) (128, 80) (129, 80)
+            // (127, 81) (128, 81) (129, 81)
+            339302416511, 339302416512, 339302416513,
+            343597383807, 343597383808, 343597383809,
+            347892351103, 347892351104, 347892351105,
+        ],
+        effects: [
+            (ResourceMultiplier: { resource: "gold", factor: 2.0 }),
+            (ResourceMultiplier: { resource: "food", factor: 1.5 }),
+            (DefenseBonus: { factor: 0.5 }),
+        ],
+        active: true,
+    ),
+
+    // ---- 蜀道: 移动代价高，有防御加成 ----
+    (
+        zone_id: "zone_shu_road",
+        tiles: [
+            // (60, 100) (61, 100) (62, 100)
+            // (60, 101) (61, 101) (62, 101)
+            429496729660, 429496729661, 429496729662,
+            433791696956, 433791696957, 433791696958,
+        ],
+        effects: [
+            (MovementCostMultiplier: { factor: 2.0 }),
+            (DefenseBonus: { factor: 0.3 }),
+        ],
+        active: true,
+    ),
+
+    // ---- 长江: 天然防线，移动受限 ----
+    (
+        zone_id: "zone_yangtze",
+        tiles: [
+            // (150, 120) (151, 120) (152, 120)
+            // (150, 121) (151, 121) (152, 121)
+            515396075670, 515396075671, 515396075672,
+            519691042966, 519691042967, 519691042968,
+        ],
+        effects: [
+            (MovementCostMultiplier: { factor: 1.5 }),
+            (DefenseBonus: { factor: 0.4 }),
+        ],
+        active: true,
+    ),
+
+    // ---- 辽东: 寒冷，资源产出低，移动困难 ----
+    (
+        zone_id: "zone_liaodong",
+        tiles: [
+            // (200, 50) (201, 50) (202, 50)
+            // (200, 51) (201, 51) (202, 51)
+            214748365000, 214748365001, 214748365002,
+            219043332296, 219043332297, 219043332298,
+        ],
+        effects: [
+            (ResourceMultiplier: { resource: "food", factor: 0.7 }),
+            (MovementCostMultiplier: { factor: 1.3 }),
+        ],
+        active: true,
+    ),
+
+    // ---- 南中: 粮食产出略低 ----
+    (
+        zone_id: "zone_nanzhong",
+        tiles: [
+            // (80, 180) (81, 180) (82, 180)
+            // (80, 181) (81, 181) (82, 181)
+            773094113360, 773094113361, 773094113362,
+            777389080656, 777389080657, 777389080658,
+        ],
+        effects: [
+            (ResourceMultiplier: { resource: "food", factor: 0.8 }),
+        ],
+        active: true,
+    ),
+
+    // ---- 长安: 战略要地，资源加成 ----
+    (
+        zone_id: "zone_changan",
+        tiles: [
+            // (100, 80) (101, 80) (102, 80)
+            // (100, 81) (101, 81) (102, 81)
+            343597383780, 343597383781, 343597383782,
+            347892351076, 347892351077, 347892351078,
+        ],
+        effects: [
+            (ResourceMultiplier: { resource: "gold", factor: 1.5 }),
+            (ResourceMultiplier: { resource: "iron", factor: 1.3 }),
+            (DefenseBonus: { factor: 0.4 }),
+        ],
+        active: true,
+    ),
+
+    // ---- 江东: 水运发达，木材丰富 ----
+    (
+        zone_id: "zone_jiangdong",
+        tiles: [
+            // (170, 150) (171, 150) (172, 150)
+            // (170, 151) (171, 151) (172, 151)
+            644245094570, 644245094571, 644245094572,
+            648540061866, 648540061867, 648540061868,
+        ],
+        effects: [
+            (ResourceMultiplier: { resource: "wood", factor: 1.5 }),
+            (MovementCostMultiplier: { factor: 0.8 }),
+        ],
+        active: true,
+    ),
+]

@@ -1,0 +1,971 @@
+//! slg-app: 《天下策》应用壳
+//!
+//! 负责窗口/入口、模式切换（游玩⇄编辑）、插件组装、崩溃日志。
+//! 将所有已实现的子系统集成，实现从启动到可玩的完整流程。
+
+use std::collections::BTreeMap;
+
+use bevy::prelude::*;
+use bevy_egui::{egui, EguiContexts};
+use slg_core::clock::*;
+use slg_core::gen::{generate_map, GenerationPreset};
+use slg_core::map::grid::HexCoord;
+use slg_core::map::loader::*;
+use slg_core::map::territory::TerritoryManager;
+use slg_core::resource::*;
+use slg_engine::camera::{HexClickEvent, HexRightClickEvent};
+use slg_engine::render::{
+    build_chunk_mesh_with_transitions, chunk_world_offset, ChunkData as EngineChunkData,
+};
+use slg_engine::systems::GameClockResource;
+use slg_ui::panels::game_over::{GameOverAction, GameOverState};
+use slg_ui::panels::main_menu::{MainMenuAction, MainMenuState};
+use slg_ui::panels::new_game::{Difficulty, GameSetupConfig, NewGameAction, NewGameState};
+
+// ---------------------------------------------------------------------------
+// Steam 初始化
+// ---------------------------------------------------------------------------
+
+/// Steam 初始化
+#[cfg(feature = "steam")]
+pub fn init_steam() -> Result<(), String> {
+    match steamworks::Client::init() {
+        Ok(_client) => {
+            info!("Steam 初始化成功");
+            // 注册 Steam 资源
+            Ok(())
+        }
+        Err(e) => {
+            warn!("Steam 初始化失败（无 SDK 时正常）: {}", e);
+            Ok(()) // 不阻塞游戏启动
+        }
+    }
+}
+
+/// 非 Steam 模式的空实现
+#[cfg(not(feature = "steam"))]
+pub fn init_steam() -> Result<(), String> {
+    Ok(())
+}
+
+/// 《天下策》主插件
+///
+/// 组装所有子插件：引擎、UI、编辑器。
+/// 注册游戏状态 Resource 和游戏循环系统。
+pub struct SlgAppPlugin;
+
+impl Plugin for SlgAppPlugin {
+    fn build(&self, app: &mut App) {
+        app
+            // 注册子插件
+            .add_plugins((
+                slg_engine::SlgEnginePlugin,
+                slg_ui::SlgUiPlugin,
+                slg_editor::SlgEditorPlugin,
+            ))
+            // 注册游戏状态 Resource
+            .init_resource::<GameState>()
+            .init_resource::<FactionStoreResource>()
+            .init_resource::<FogOfWarResource>()
+            .init_resource::<TerritoryManagerResource>()
+            // 启动系统：生成地图、初始化势力
+            .add_systems(Startup, setup_game)
+            // 主菜单动作处理 + 地图点击
+            .add_systems(
+                Update,
+                (
+                    handle_main_menu_actions,
+                    handle_new_game_actions,
+                    handle_game_over_actions,
+                    handle_hex_click,
+                    handle_hex_right_click,
+                    render_editor_return,
+                    render_map_debug,
+                ),
+            )
+            // 输入链路诊断系统（设置 HEX_PICK_DEBUG=1 启用）
+            .add_systems(Update, input_diagnostics)
+            // 点击涟漪生命周期
+            .add_systems(Update, update_click_rings)
+            // 游戏循环系统：在 tick_dispatcher 之后运行
+            .add_systems(
+                Update,
+                (process_tick_phases, update_ui_state).after(slg_engine::systems::tick_dispatcher),
+            );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 游戏状态 Resource
+// ---------------------------------------------------------------------------
+
+/// 点击涟漪：每次左/右键点击地图时 spawn 一个白色圆环，1 秒后淡出消失。
+/// 作用：给玩家**视觉反馈**，证明点击已被检测到——即使点到了地图外（hex 越界），
+/// 也能看到圆环出现在点击位置，方便玩家理解坐标系。
+#[derive(Component)]
+struct ClickRing {
+    /// 剩余生命（秒）
+    lifetime: f32,
+}
+
+/// 每帧更新点击涟漪的 alpha 与生命周期
+fn update_click_rings(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut query: Query<(Entity, &mut ClickRing, &mut Sprite)>,
+) {
+    for (entity, mut ring, mut sprite) in query.iter_mut() {
+        ring.lifetime -= time.delta_secs();
+        if ring.lifetime <= 0.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        // 剩余生命 0~1.0 → 线性 alpha 1.0→0.0
+        let alpha = ring.lifetime.clamp(0.0, 1.0);
+        sprite.color = Color::srgba(1.0, 1.0, 1.0, alpha);
+    }
+}
+
+/// 在点击位置 spawn 一个白色圆环
+fn spawn_click_ring(commands: &mut Commands, world_pos: Vec2) {
+    // 圆环大小需要跟相机 scale 反向关联：scale 越大（看得越远），圆环也越大
+    // 简化方案：固定 20 世界单位（在 scale=1.0 下 20 像素，scale=3.0 下 60 像素，足够醒目）
+    let size = 20.0_f32;
+    commands.spawn((
+        SpriteBundle {
+            sprite: Sprite {
+                color: Color::srgba(1.0, 1.0, 1.0, 1.0),
+                custom_size: Some(Vec2::new(size, size)),
+                ..default()
+            },
+            transform: Transform::from_translation(Vec3::new(world_pos.x, world_pos.y, 2.0)),
+            ..default()
+        },
+        ClickRing { lifetime: 1.0 },
+    ));
+}
+
+/// 游戏状态
+#[derive(Resource)]
+pub struct GameState {
+    pub phase: GamePhase,
+    pub tick: u64,
+    /// 上一次处理的 tick，用于检测新 tick
+    pub last_processed_tick: u64,
+    /// 玩家势力 ID
+    pub player_faction_id: String,
+    /// 当前难度
+    pub difficulty: Difficulty,
+}
+
+impl Default for GameState {
+    fn default() -> Self {
+        Self {
+            phase: GamePhase::Menu,
+            tick: 0,
+            last_processed_tick: 0,
+            player_faction_id: String::new(),
+            difficulty: Difficulty::Normal,
+        }
+    }
+}
+
+/// 游戏阶段
+#[derive(Default, PartialEq, Eq)]
+pub enum GamePhase {
+    #[default]
+    Menu,
+    NewGameSetup,
+    Playing,
+    Paused,
+    Editor,
+    GameOver,
+}
+
+// ---------------------------------------------------------------------------
+// 势力存储 Resource
+// ---------------------------------------------------------------------------
+
+/// 势力存储 Bevy Resource 包装
+#[derive(Resource)]
+pub struct FactionStoreResource {
+    pub store: FactionStore,
+}
+
+impl Default for FactionStoreResource {
+    fn default() -> Self {
+        Self {
+            store: FactionStore {
+                factions: BTreeMap::new(),
+            },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 领地管理 Resource
+// ---------------------------------------------------------------------------
+
+/// 领地管理 Bevy Resource 包装
+#[derive(Resource)]
+pub struct TerritoryManagerResource {
+    pub manager: TerritoryManager,
+}
+
+impl Default for TerritoryManagerResource {
+    fn default() -> Self {
+        Self {
+            manager: TerritoryManager::new(256 * 256),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 迷雾 Resource
+// ---------------------------------------------------------------------------
+
+/// 迷雾 Bevy Resource 包装
+#[derive(Resource)]
+pub struct FogOfWarResource {
+    pub fog: FogOfWar,
+}
+
+impl Default for FogOfWarResource {
+    fn default() -> Self {
+        Self {
+            fog: FogOfWar { chunks: vec![] },
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 启动系统
+// ---------------------------------------------------------------------------
+
+/// 启动游戏：仅显示主菜单，等待玩家选择
+fn setup_game(
+    mut clock_res: ResMut<GameClockResource>,
+    mut menu_state: ResMut<MainMenuState>,
+) {
+    // 时钟暂停，等待玩家开始游戏
+    clock_res.clock.speed = Speed::Paused;
+
+    // 显示主菜单
+    menu_state.show = true;
+
+    info!("游戏启动完成，显示主菜单");
+}
+
+/// 根据配置生成地图并初始化游戏世界
+fn start_new_game(
+    config: &GameSetupConfig,
+    game_state: &mut GameState,
+    clock_res: &mut GameClockResource,
+    faction_res: &mut FactionStoreResource,
+    territory_res: &mut TerritoryManagerResource,
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<ColorMaterial>,
+    existing_chunks: &Query<Entity, With<EngineChunkData>>,
+    camera_query: &mut Query<&mut Transform, With<Camera2d>>,
+    projection_query: &mut Query<&mut Projection, With<Camera2d>>,
+    windows: &Query<&Window>,
+) {
+    // 根据剧本选择地图参数
+    let (preset, seed) = match config.scenario_id.as_str() {
+        "sanguo_dl" => {
+            let p = GenerationPreset {
+                name: "三国鼎立".to_string(),
+                description: "魏蜀吴三分天下".to_string(),
+                width: 128,
+                height: 128,
+                seed: 42,
+                terrain_style: 0.5,
+                richness: 0.6,
+                num_factions: 6,
+                tags: vec!["标准".to_string(), "三国".to_string()],
+            };
+            (p, 42u64)
+        }
+        _ => {
+            // 沙盒模式 / 默认
+            let p = GenerationPreset {
+                name: "沙盒模式".to_string(),
+                description: "自由探索".to_string(),
+                width: 128,
+                height: 128,
+                seed: 123,
+                terrain_style: 0.5,
+                richness: 0.5,
+                num_factions: 6,
+                tags: vec!["沙盒".to_string()],
+            };
+            (p, 123u64)
+        }
+    };
+
+    info!("生成地图：{} ({}x{}, seed={})", preset.name, preset.width, preset.height, seed);
+
+    // 生成地图
+    let doc = generate_map(seed, &preset);
+
+    // 加载地图到运行时
+    let load_result = load_map(&doc);
+
+    // 清空旧数据
+    faction_res.store.factions.clear();
+    territory_res.manager = TerritoryManager::new((preset.width * preset.height) as usize);
+
+    // 删除旧的 Chunk 实体
+    for entity in existing_chunks.iter() {
+        commands.entity(entity).despawn();
+    }
+
+    // 注册所有地块到 TerritoryManager
+    for r in 0..(preset.height as i32) {
+        for q in 0..(preset.width as i32) {
+            territory_res.manager.register_tile(HexCoord::new(q, r));
+        }
+    }
+
+    // 初始化势力
+    let mut player_faction_id = String::new();
+    for (id, state) in load_result.factions {
+        // 第一个势力作为玩家势力（可后续根据 config 映射）
+        if player_faction_id.is_empty() {
+            player_faction_id = id.clone();
+        }
+        faction_res.store.factions.insert(id, state);
+    }
+
+    // 根据配置中的势力名映射玩家势力
+    // 如果配置了具体的势力名，尝试匹配
+    if !config.player_faction_name.is_empty() {
+        for fid in faction_res.store.factions.keys() {
+            // 简单匹配：faction_N 中 N 匹配配置名中的数字，或直接用第一个
+            if fid.contains(&config.player_faction_name) {
+                player_faction_id = fid.clone();
+                break;
+            }
+        }
+    }
+
+    // 初始化领地
+    for (key, entity) in &load_result.entity_placements {
+        if let Some(ref faction_id) = entity.faction_id {
+            territory_res
+                .manager
+                .owner_map
+                .insert(*key, faction_id.clone());
+        }
+    }
+
+    // 从出生点设置势力主城
+    for (key, entity) in &load_result.entity_placements {
+        if entity.entity_type == "spawn" {
+            if let Some(ref faction_id) = entity.faction_id {
+                let coord = HexCoord::from_tile_key(*key);
+                territory_res.manager.set_main_city(faction_id, coord);
+
+                if let Some(faction) = faction_res.store.factions.get_mut(faction_id) {
+                    faction.main_city = Some(coord);
+                }
+            }
+        }
+    }
+
+    // 更新游戏状态
+    game_state.player_faction_id = player_faction_id.clone();
+    game_state.difficulty = config.difficulty;
+    game_state.tick = 0;
+    game_state.last_processed_tick = 0;
+    game_state.phase = GamePhase::Playing;
+
+    // 启动时钟
+    clock_res.clock.speed = Speed::X1;
+    clock_res.clock.current_tick = 0;
+    clock_res.clock.accumulator = 0.0;
+
+    // 生成并渲染 Chunk 实体
+    let chunk_count = load_result.chunk_data.len();
+    for core_chunk in &load_result.chunk_data {
+        let engine_chunk = EngineChunkData {
+            chunk_x: core_chunk.chunk_x as i32,
+            chunk_y: core_chunk.chunk_y as i32,
+            terrains: core_chunk.terrains,
+            owners: core_chunk.owners,
+            levels: core_chunk.levels,
+            dirty: true,
+            current_lod: 0,
+        };
+
+        let mesh = build_chunk_mesh_with_transitions(&core_chunk.terrains, &core_chunk.owners);
+        let mesh_handle = meshes.add(mesh);
+        let material_handle = materials.add(ColorMaterial::default());
+
+        let offset = chunk_world_offset(engine_chunk.chunk_x, engine_chunk.chunk_y);
+
+        commands.spawn((
+            engine_chunk,
+            Mesh2d(mesh_handle),
+            MeshMaterial2d(material_handle),
+            Transform::from_translation(Vec3::new(offset.x, offset.y, 0.0)),
+            Visibility::default(),
+            GlobalTransform::default(),
+        ));
+    }
+
+    // 居中相机到地图中心
+    // 地图最后一个 chunk 的位置
+    let chunks_x = preset.width.div_ceil(32);
+    let chunks_y = preset.height.div_ceil(32);
+    let chunk_w = 32.0 * slg_engine::render::chunk_mesh::COL_SPACING;
+    let chunk_h = 32.0 * slg_engine::render::chunk_mesh::ROW_SPACING;
+    let map_total_w = chunks_x as f32 * chunk_w;
+    let map_total_h = chunks_y as f32 * chunk_h;
+    let map_center_x = map_total_w * 0.5;
+    let map_center_y = map_total_h * 0.5;
+    if let Ok(mut transform) = camera_query.get_single_mut() {
+        transform.translation = Vec3::new(map_center_x, map_center_y, 0.0);
+    }
+    // 自适应缩放：根据窗口实际尺寸让地图填满视口（margin=1.0 → 整张地图贴边显示）。
+    // 旧代码硬编码 scale=1.0 + 80% margin：720p 下视口=1280×720 世界单位，
+    // 128×128 hex 地图（≈222×192 世界单位）只占约 1/5 屏幕，大量空白
+    // 玩家很容易点到地图外（hex 越界被 handler 静默 continue 掉，看着像"没反应"）。
+    // margin=1.0 让地图短边贴边，y 方向铺满窗口；左右仍有少量空白（地图比窗口更方）
+    // 但配合 spawn_click_ring 视觉反馈，玩家不会再困惑"点没点上"。
+    let window_size = windows.single().resolution.size();
+    let fit_scale =
+        slg_engine::camera::compute_fit_ortho_scale(map_total_w, map_total_h, window_size.x, window_size.y, 1.0);
+    if let Ok(mut projection) = projection_query.get_single_mut() {
+        if let Projection::Orthographic(ref mut ortho) = *projection {
+            ortho.scale = fit_scale;
+        }
+    }
+
+    info!(
+        "新游戏已开始：剧本={}, 玩家势力={}, 难度={:?}, {} 个势力, {} 个 Chunk, 相机居中({}, {}), scale={:.3} (window={}x{})",
+        config.scenario_id,
+        player_faction_id,
+        config.difficulty,
+        faction_res.store.factions.len(),
+        chunk_count,
+        map_center_x,
+        map_center_y,
+        fit_scale,
+        window_size.x,
+        window_size.y,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 主菜单动作处理
+// ---------------------------------------------------------------------------
+
+/// 处理主菜单动作事件，切换游戏阶段
+fn handle_main_menu_actions(
+    mut action_events: EventReader<MainMenuAction>,
+    mut game_state: ResMut<GameState>,
+    mut menu_state: ResMut<MainMenuState>,
+    mut new_game_state: ResMut<NewGameState>,
+) {
+    for action in action_events.read() {
+        match action {
+            MainMenuAction::NewGame => {
+                game_state.phase = GamePhase::NewGameSetup;
+                menu_state.show = false;
+                new_game_state.show = true;
+                new_game_state.step = Default::default();
+                new_game_state.config = Default::default();
+                info!("玩家选择：新游戏");
+            }
+            MainMenuAction::ContinueGame => {
+                // TODO: 扫描存档并显示列表
+                info!("玩家选择：继续游戏（暂无存档功能）");
+            }
+            MainMenuAction::Editor => {
+                game_state.phase = GamePhase::Editor;
+                menu_state.show = false;
+                info!("玩家选择：编辑器");
+            }
+            MainMenuAction::Settings => {
+                // TODO: 打开设置面板
+                info!("玩家选择：设置（尚未实现）");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 新游戏动作处理
+// ---------------------------------------------------------------------------
+
+/// 处理新游戏动作事件，生成地图并开始游戏
+fn handle_new_game_actions(
+    mut commands: Commands,
+    mut action_events: EventReader<NewGameAction>,
+    mut game_state: ResMut<GameState>,
+    mut clock_res: ResMut<GameClockResource>,
+    mut faction_res: ResMut<FactionStoreResource>,
+    mut territory_res: ResMut<TerritoryManagerResource>,
+    mut menu_state: ResMut<MainMenuState>,
+    mut new_game_state: ResMut<NewGameState>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    existing_chunks: Query<Entity, With<EngineChunkData>>,
+    mut camera_query: Query<&mut Transform, With<Camera2d>>,
+    mut projection_query: Query<&mut Projection, With<Camera2d>>,
+    windows: Query<&Window>,
+) {
+    for action in action_events.read() {
+        match action {
+            NewGameAction::StartGame(config) => {
+                new_game_state.show = false;
+                start_new_game(
+                    config,
+                    &mut *game_state,
+                    &mut *clock_res,
+                    &mut *faction_res,
+                    &mut *territory_res,
+                    &mut commands,
+                    &mut meshes,
+                    &mut materials,
+                    &existing_chunks,
+                    &mut camera_query,
+                    &mut projection_query,
+                    &windows,
+                );
+            }
+            NewGameAction::BackToMenu => {
+                game_state.phase = GamePhase::Menu;
+                new_game_state.show = false;
+                menu_state.show = true;
+                info!("返回主菜单");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 游戏结束动作处理
+// ---------------------------------------------------------------------------
+
+/// 处理游戏结束画面的动作事件
+fn handle_game_over_actions(
+    mut action_events: EventReader<GameOverAction>,
+    mut game_state: ResMut<GameState>,
+    mut game_over_state: ResMut<GameOverState>,
+    mut menu_state: ResMut<MainMenuState>,
+    mut new_game_state: ResMut<NewGameState>,
+) {
+    for action in action_events.read() {
+        match action {
+            GameOverAction::NewGame => {
+                game_over_state.show = false;
+                game_state.phase = GamePhase::NewGameSetup;
+                game_state.player_faction_id.clear();
+                new_game_state.show = true;
+                new_game_state.step = Default::default();
+                new_game_state.config = Default::default();
+                info!("再来一局");
+            }
+            GameOverAction::MainMenu => {
+                game_over_state.show = false;
+                game_state.phase = GamePhase::Menu;
+                menu_state.show = true;
+                info!("返回主菜单");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 游戏循环系统
+// ---------------------------------------------------------------------------
+
+/// 处理每个 tick 的各阶段
+///
+/// 在 tick_dispatcher 之后运行，检测新 tick 并执行游戏逻辑。
+/// tick_dispatcher 负责时钟推进，本系统负责游戏逻辑处理。
+fn process_tick_phases(
+    clock_res: Res<GameClockResource>,
+    mut faction_res: ResMut<FactionStoreResource>,
+    mut command_res: ResMut<slg_engine::systems::CommandQueueResource>,
+    mut territory_res: ResMut<TerritoryManagerResource>,
+    mut game_state: ResMut<GameState>,
+) {
+    // 只在游戏进行中处理 tick
+    if game_state.phase != GamePhase::Playing {
+        return;
+    }
+
+    let current_tick = clock_res.clock.current_tick;
+
+    // 只在新 tick 时处理
+    if current_tick == game_state.last_processed_tick {
+        return;
+    }
+
+    // 处理所有累积的 tick
+    while game_state.last_processed_tick < current_tick {
+        game_state.last_processed_tick += 1;
+        game_state.tick = game_state.last_processed_tick;
+
+        for phase in TICK_PHASES {
+            match phase {
+                TickPhase::TickStart => {
+                    // 注入暂停时入队的指令
+                    while let Some(cmd) = command_res.queue.commands.pop_front() {
+                        execute_command(cmd, &mut faction_res, &mut territory_res);
+                    }
+                }
+                TickPhase::ResourceProduction => {
+                    // 每个势力的资源产出（简化实现）
+                    for faction in faction_res.store.factions.values_mut() {
+                        // 基础产出：每 tick 产出固定资源
+                        faction.resources.gold += 10;
+                        faction.resources.food += 5;
+                    }
+                }
+                TickPhase::AIDecision => {
+                    // AI 决策（错峰）
+                    for (i, (_faction_id, _faction)) in
+                        faction_res.store.factions.iter_mut().enumerate()
+                    {
+                        if should_ai_decide(game_state.tick, i as u8) {
+                            // 简化 AI：后续填充完整实现
+                            // 完整实现在 slg-core::ai::tick_ai
+                        }
+                    }
+                }
+                _ => {
+                    // 其他阶段：BuildQueue, Recruitment, MarchAdvance,
+                    // CombatResolution, TerritoryUpdate, TickEnd
+                    // 简化实现，后续迭代填充
+                }
+            }
+        }
+    }
+}
+
+/// 执行玩家指令
+fn execute_command(
+    cmd: PlayerCommand,
+    _faction_res: &mut FactionStoreResource,
+    territory_res: &mut TerritoryManagerResource,
+) {
+    match cmd {
+        PlayerCommand::OccupyTile(coord, faction_id) => {
+            // 简化：直接占领
+            territory_res.manager.occupy(coord, &faction_id);
+        }
+        _ => {
+            // 其他指令后续实现
+        }
+    }
+}
+
+/// 更新 UI 状态
+///
+/// 将游戏状态同步到 UI 面板。
+fn update_ui_state(
+    game_state: Res<GameState>,
+    clock_res: Res<GameClockResource>,
+    faction_res: Res<FactionStoreResource>,
+    mut top_bar: ResMut<slg_ui::panels::top_bar::TopBarState>,
+) {
+    // 控制顶栏显示/隐藏
+    top_bar.show = game_state.phase == GamePhase::Playing;
+
+    if !top_bar.show {
+        return;
+    }
+
+    // 读取玩家势力资源
+    if let Some(player_faction) = faction_res.store.factions.get(&game_state.player_faction_id) {
+        top_bar.gold = player_faction.resources.gold;
+        top_bar.food = player_faction.resources.food;
+        top_bar.wood = player_faction.resources.wood;
+        top_bar.iron = player_faction.resources.iron;
+        top_bar.stone = player_faction.resources.stone;
+    }
+    top_bar.tick = game_state.tick;
+    top_bar.speed = format!("{:?}", clock_res.clock.speed);
+}
+
+// ---------------------------------------------------------------------------
+// 编辑器返回主菜单
+// ---------------------------------------------------------------------------
+
+/// 编辑器模式下显示返回主菜单按钮
+fn render_editor_return(
+    mut contexts: EguiContexts,
+    mut game_state: ResMut<GameState>,
+    mut menu_state: ResMut<MainMenuState>,
+    mut editor_state: ResMut<slg_editor::scenario_editor::ScenarioEditorState>,
+    mut rule_state: ResMut<slg_editor::rule_editor::RuleEditorState>,
+) {
+    if game_state.phase != GamePhase::Editor {
+        return;
+    }
+
+    let ctx = contexts.ctx_mut();
+
+    egui::TopBottomPanel::top("editor_toolbar").show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("🖌 编辑器模式");
+            ui.separator();
+            if ui.button("返回主菜单").clicked() {
+                editor_state.show = false;
+                rule_state.show = false;
+                game_state.phase = GamePhase::Menu;
+                menu_state.show = true;
+                info!("退出编辑器，返回主菜单");
+            }
+        });
+    });
+}
+
+/// 地图调试信息（临时，用于排查渲染问题）
+fn render_map_debug(
+    mut contexts: EguiContexts,
+    game_state: Res<GameState>,
+    chunk_query: Query<&EngineChunkData>,
+    camera_query: Query<&Transform, With<Camera2d>>,
+    projection_query: Query<&Projection, With<Camera2d>>,
+    pick_result: Res<slg_engine::camera::HexPickResult>,
+    mouse_button: Res<ButtonInput<MouseButton>>,
+) {
+    if game_state.phase != GamePhase::Playing {
+        return;
+    }
+
+    let ctx = contexts.ctx_mut();
+
+    egui::Window::new("地图调试")
+        .default_open(true)
+        .show(ctx, |ui| {
+            // 相机
+            if let Ok(t) = camera_query.get_single() {
+                ui.label(format!("相机: ({:.1}, {:.1})", t.translation.x, t.translation.y));
+            }
+            if let Ok(p) = projection_query.get_single() {
+                if let Projection::Orthographic(ortho) = p {
+                    let zoom = 1.0 / ortho.scale;
+                    ui.label(format!("缩放: {:.2}, zoom: {:.4}", ortho.scale, zoom));
+                }
+            }
+
+            // Chunk
+            let count = chunk_query.iter().count();
+            ui.label(format!("Chunk 数: {}", count));
+
+            // 地形统计
+            let mut terrain_counts = [0u32; 8];
+            for chunk in chunk_query.iter() {
+                for &t in &chunk.terrains {
+                    if (t as usize) < 8 {
+                        terrain_counts[t as usize] += 1;
+                    }
+                }
+            }
+            ui.label(format!(
+                "平原={} 水={} 山={} 森={} 沙={} 沼={} 丘={} 关={}",
+                terrain_counts[0], terrain_counts[2], terrain_counts[1],
+                terrain_counts[3], terrain_counts[4], terrain_counts[5],
+                terrain_counts[6], terrain_counts[7]
+            ));
+
+            // 第一个chunk LOD
+            if let Some(chunk) = chunk_query.iter().next() {
+                ui.label(format!("Chunk(0,0) LOD={}, dirty={}", chunk.current_lod, chunk.dirty));
+            }
+
+            ui.separator();
+            ui.label("─── 鼠标/拾取 ───");
+
+            // hex 拾取结果
+            let hex_str = match pick_result.coord {
+                Some(c) => format!("({}, {})", c.q, c.r),
+                None => "None".to_string(),
+            };
+            ui.label(format!("hex 拾取: {}", hex_str));
+
+            // 鼠标按键状态
+            ui.label(format!(
+                "鼠标: L={} L_just={} R={} R_just={}",
+                mouse_button.pressed(MouseButton::Left),
+                mouse_button.just_pressed(MouseButton::Left),
+                mouse_button.pressed(MouseButton::Right),
+                mouse_button.just_pressed(MouseButton::Right),
+            ));
+
+            // egui 拦截状态
+            ui.label(format!("egui 拦截: {}", ctx.is_using_pointer()));
+        });
+}
+
+// ---------------------------------------------------------------------------
+// 地图点击事件处理
+// ---------------------------------------------------------------------------
+
+/// 处理地图地块点击事件
+///
+/// 当用户在非 egui 区域左键点击地图时，CameraPlugin 的 hex_click 系统
+/// 会发送 HexClickEvent。本系统读取事件并根据游戏阶段分发处理。
+///
+/// **注意**：spawn_click_ring **在越界检查之前**就执行，保证玩家在地图外点击
+/// 也能看到圆环反馈，方便他们理解坐标系。
+fn handle_hex_click(
+    mut commands: Commands,
+    mut click_events: EventReader<HexClickEvent>,
+    game_state: Res<GameState>,
+    territory_res: Res<TerritoryManagerResource>,
+    _faction_res: Res<FactionStoreResource>,
+) {
+    for event in click_events.read() {
+        let coord = event.coord;
+
+        // 总是先 spawn 涟漪，让玩家看到点击已检测
+        spawn_click_ring(&mut commands, event.world_pos);
+
+        // 坐标合法性检查：必须在地图范围内
+        // TODO: 从地图元数据获取实际尺寸，当前硬编码 128x128
+        if coord.q < 0 || coord.r < 0 || coord.q >= 128 || coord.r >= 128 {
+            info!(
+                "[handle_hex_click] 忽略越界点击: ({}, {})",
+                coord.q, coord.r
+            );
+            continue;
+        }
+
+        match game_state.phase {
+            GamePhase::Playing => {
+                // 查询地块归属
+                let tile_key = coord.to_tile_key();
+                let owner = territory_res.manager.owner_map.get(&tile_key);
+                info!(
+                    "[Playing] 点击地块 ({}, {}), 归属={:?}, 玩家势力={}",
+                    coord.q, coord.r, owner, game_state.player_faction_id
+                );
+                // TODO: 打开地块详情面板 / 选中地块 / 显示指令选项
+            }
+            GamePhase::Editor => {
+                info!("[Editor] 点击地块 ({}, {})", coord.q, coord.r);
+                // TODO: 编辑器工具响应（笔刷/填充/选择等）
+            }
+            _ => {
+                // 其他阶段忽略地图点击
+            }
+        }
+    }
+}
+
+/// 处理地图地块右键点击事件
+///
+/// 右键用于：显示地块详情、部队指令菜单、上下文操作等。
+fn handle_hex_right_click(
+    mut commands: Commands,
+    mut click_events: EventReader<HexRightClickEvent>,
+    game_state: Res<GameState>,
+    territory_res: Res<TerritoryManagerResource>,
+) {
+    for event in click_events.read() {
+        let coord = event.coord;
+
+        // 总是先 spawn 涟漪
+        spawn_click_ring(&mut commands, event.world_pos);
+
+        if coord.q < 0 || coord.r < 0 || coord.q >= 128 || coord.r >= 128 {
+            info!(
+                "[handle_hex_right_click] 忽略越界右键: ({}, {})",
+                coord.q, coord.r
+            );
+            continue;
+        }
+
+        match game_state.phase {
+            GamePhase::Playing => {
+                let tile_key = coord.to_tile_key();
+                let owner = territory_res.manager.owner_map.get(&tile_key);
+                info!(
+                    "[Playing] 右键地块 ({}, {}), 归属={:?}",
+                    coord.q, coord.r, owner
+                );
+                // TODO: 显示右键上下文菜单（部队指令、地块详情等）
+            }
+            GamePhase::Editor => {
+                info!("[Editor] 右键地块 ({}, {})", coord.q, coord.r);
+                // TODO: 编辑器右键操作（吸管工具、属性查看等）
+            }
+            _ => {}
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 输入链路诊断系统
+// ---------------------------------------------------------------------------
+
+/// 输入链路诊断：每帧打印 egui 指针状态 + 鼠标按键 + 坐标
+///
+/// 启用方式：设置环境变量 `HEX_PICK_DEBUG=1` 后运行。
+/// 输出信息：
+/// - egui 是否正在使用指针（is_using_pointer）
+/// - 指针是否在 egui 区域上方（is_pointer_over_area）
+/// - 鼠标左键/右键 pressed / just_pressed 状态
+/// - egui 视口内的鼠标位置
+///
+/// 用途快速判断：
+/// - 「事件被吞」：is_using_pointer=true 时左键 just_pressed=false
+/// - 「坐标错误」：egui 坐标与 hex_pick 坐标不一致
+fn input_diagnostics(
+    mut contexts: EguiContexts,
+    mouse_button: Res<ButtonInput<MouseButton>>,
+    pick_result: Res<slg_engine::camera::HexPickResult>,
+    mut frame_counter: Local<u32>,
+) {
+    // 每 60 帧输出一次，避免日志刷屏
+    *frame_counter += 1;
+    if *frame_counter % 60 != 0 {
+        return;
+    }
+
+    // 仅在调试模式下运行
+    if std::env::var("HEX_PICK_DEBUG").as_deref() != Ok("1") {
+        return;
+    }
+
+    let ctx = contexts.ctx_mut();
+
+    // egui 指针状态
+    let is_using_pointer = ctx.is_using_pointer();
+    let pointer_over_area = ctx.is_pointer_over_area();
+
+    // egui 视口内的鼠标位置
+    let egui_pointer_pos = ctx.input(|i| i.pointer.latest_pos());
+    let egui_pos_str = match egui_pointer_pos {
+        Some(pos) => format!("({:.1}, {:.1})", pos.x, pos.y),
+        None => "None".to_string(),
+    };
+
+    // Bevy 侧鼠标按键状态
+    let left_pressed = mouse_button.pressed(MouseButton::Left);
+    let left_just = mouse_button.just_pressed(MouseButton::Left);
+    let right_pressed = mouse_button.pressed(MouseButton::Right);
+    let right_just = mouse_button.just_pressed(MouseButton::Right);
+
+    // hex_pick 结果
+    let hex_str = match pick_result.coord {
+        Some(c) => format!("({}, {})", c.q, c.r),
+        None => "None".to_string(),
+    };
+
+    info!(
+        "[DIAG] egui: using_ptr={}, over_area={}, pos={} | mouse: L={} L'={} R={} R'={} | hex={}",
+        is_using_pointer, pointer_over_area, egui_pos_str,
+        left_pressed, left_just, right_pressed, right_just,
+        hex_str
+    );
+}
+

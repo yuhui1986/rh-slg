@@ -1,0 +1,188 @@
+// 建筑定义表（完整数据）
+// 字段与 slg-data config.rs BuildingDef 完全对齐
+// 7 个建筑，每个 3 级
+
+[
+    (
+        id: "building_farm",
+        name: "农田",
+        category: "economy",
+        levels: [
+            (
+                cost_resources: 500,
+                build_time_ticks: 100,
+                effect: "food_production:10",
+            ),
+            (
+                cost_resources: 1200,
+                build_time_ticks: 250,
+                effect: "food_production:25",
+            ),
+            (
+                cost_resources: 3000,
+                build_time_ticks: 500,
+                effect: "food_production:50",
+            ),
+        ],
+        terrain_req: [
+            "terrain_plains",
+        ],
+    ),
+    (
+        id: "building_barracks",
+        name: "兵营",
+        category: "military",
+        levels: [
+            (
+                cost_resources: 800,
+                build_time_ticks: 150,
+                effect: "recruit_speed:1.0",
+            ),
+            (
+                cost_resources: 2000,
+                build_time_ticks: 400,
+                effect: "recruit_speed:1.5",
+            ),
+            (
+                cost_resources: 5000,
+                build_time_ticks: 800,
+                effect: "recruit_speed:2.0",
+            ),
+        ],
+        terrain_req: [
+            "terrain_plains",
+        ],
+    ),
+    (
+        id: "building_warehouse",
+        name: "仓库",
+        category: "economy",
+        levels: [
+            (
+                cost_resources: 600,
+                build_time_ticks: 120,
+                effect: "resource_cap:2000",
+            ),
+            (
+                cost_resources: 1500,
+                build_time_ticks: 300,
+                effect: "resource_cap:5000",
+            ),
+            (
+                cost_resources: 4000,
+                build_time_ticks: 600,
+                effect: "resource_cap:12000",
+            ),
+        ],
+        terrain_req: [
+            "terrain_plains",
+            "terrain_hills",
+        ],
+    ),
+    (
+        id: "building_wall",
+        name: "城墙",
+        category: "defense",
+        levels: [
+            (
+                cost_resources: 1000,
+                build_time_ticks: 200,
+                effect: "city_defense:20",
+            ),
+            (
+                cost_resources: 2500,
+                build_time_ticks: 500,
+                effect: "city_defense:50",
+            ),
+            (
+                cost_resources: 6000,
+                build_time_ticks: 1000,
+                effect: "city_defense:100",
+            ),
+        ],
+        terrain_req: [
+            "terrain_plains",
+            "terrain_hills",
+            "terrain_pass",
+        ],
+    ),
+    (
+        id: "building_beacon",
+        name: "烽火台",
+        category: "intelligence",
+        levels: [
+            (
+                cost_resources: 400,
+                build_time_ticks: 80,
+                effect: "vision_range:3",
+            ),
+            (
+                cost_resources: 1000,
+                build_time_ticks: 200,
+                effect: "vision_range:5",
+            ),
+            (
+                cost_resources: 2500,
+                build_time_ticks: 400,
+                effect: "vision_range:8",
+            ),
+        ],
+        terrain_req: [
+            "terrain_plains",
+            "terrain_hills",
+            "terrain_pass",
+            "terrain_mountain",
+        ],
+    ),
+    (
+        id: "building_market",
+        name: "市场",
+        category: "economy",
+        levels: [
+            (
+                cost_resources: 700,
+                build_time_ticks: 130,
+                effect: "gold_production:15",
+            ),
+            (
+                cost_resources: 1800,
+                build_time_ticks: 350,
+                effect: "gold_production:35",
+            ),
+            (
+                cost_resources: 4500,
+                build_time_ticks: 700,
+                effect: "gold_production:70",
+            ),
+        ],
+        terrain_req: [
+            "terrain_plains",
+        ],
+    ),
+    (
+        id: "building_smithy",
+        name: "铁匠铺",
+        category: "military",
+        levels: [
+            (
+                cost_resources: 900,
+                build_time_ticks: 160,
+                effect: "attack_bonus:5",
+            ),
+            (
+                cost_resources: 2200,
+                build_time_ticks: 400,
+                effect: "attack_bonus:12",
+            ),
+            (
+                cost_resources: 5500,
+                build_time_ticks: 850,
+                effect: "attack_bonus:25",
+            ),
+        ],
+        terrain_req: [
+            "terrain_plains",
+            "terrain_hills",
+        ],
+    ),
+]

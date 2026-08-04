@@ -1,0 +1,52 @@
+// 事件定义表（完整数据）
+// 字段与 slg-data config.rs EventDef 完全对齐
+// 6 个全局事件
+
+[
+    (
+        id: "event_game_start",
+        name: "开局事件",
+        trigger: "game_start",
+        effect: "init_resources:gold=1000,food=500,wood=500,iron=200,stone=200",
+        script_hook: None,
+    ),
+    (
+        id: "event_yellow_turban",
+        name: "黄巾余党",
+        // TODO: 平衡调整
+        trigger: "tick < 100",
+        effect: "spawn_rebels:count=3,strength=500,random_location=true",
+        script_hook: Some("hook_yellow_turban_rebellion"),
+    ),
+    (
+        id: "event_drought",
+        name: "天灾·旱灾",
+        // TODO: 平衡调整
+        trigger: "random_chance:0.05_per_tick",
+        effect: "debuff_food_production:ratio=0.5,duration=10",
+        script_hook: Some("hook_drought_effect"),
+    ),
+    (
+        id: "event_famous_general",
+        name: "名将出世",
+        // TODO: 平衡调整
+        trigger: "tick > 200",
+        effect: "grant_general:random_faction=true,from_pool=unassigned",
+        script_hook: Some("hook_famous_general_emerge"),
+    ),
+    (
+        id: "event_faction_destroyed",
+        name: "势力覆灭",
+        trigger: "faction_main_city_captured",
+        effect: "diplomacy_shift:all_relations_change=-10",
+        script_hook: Some("hook_faction_destroyed"),
+    ),
+    (
+        id: "event_victory_check",
+        name: "胜利条件检查",
+        // TODO: 平衡调整
+        trigger: "every_50_ticks",
+        effect: "check_victory_conditions",
+        script_hook: Some("hook_victory_check"),
+    ),
+]

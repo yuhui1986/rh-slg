@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+  dependency-check:
+    name: Dependency Direction Check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure slg-core has no bevy dependency
+        run: |
+          $result = Select-String -Path "crates\slg-core\Cargo.toml" -Pattern "bevy"
+          if ($result) {
+            Write-Error "slg-core must not depend on bevy! Found: $result"
+            exit 1
+          }
+          Write-Output "OK: slg-core has no bevy dependency"
+
+      - name: Ensure slg-data has no bevy dependency
+        run: |
+          $result = Select-String -Path "crates\slg-data\Cargo.toml" -Pattern "bevy"
+          if ($result) {
+            Write-Error "slg-data must not depend on bevy! Found: $result"
+            exit 1
+          }
+          Write-Output "OK: slg-data has no bevy dependency"
+
+  test:
+    name: Test
+    runs-on: windows-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --workspace
+
+  build:
+    name: Build
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release
+        run: cargo build --release
+
+  build-steam:
+    name: Build (Steam)
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build with Steam feature
+        run: cargo build --release --features steam
+        continue-on-error: true  # 无 SDK 时允许失败

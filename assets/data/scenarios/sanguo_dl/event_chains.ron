@@ -1,0 +1,269 @@
+// 三国鼎立剧本事件链定义
+// 对应 Rust 类型: Vec<EventChainDef>
+// 见 crates/slg-core/src/event/chain.rs
+
+[
+    // ---- 开局事件链 ----
+    (
+        id: "chain_opening",
+        name: "乱世开端",
+        repeat: false,
+        nodes: [
+            (
+                trigger: (TimeReached: { tick: 0 }),
+                effects: [
+                    (ShowMessage: { key: "event-opening" }),
+                ],
+                next_index: None,
+            ),
+            (
+                trigger: (TimeReached: { tick: 10 }),
+                effects: [
+                    (ShowMessage: { key: "event-yellow-turban-warning" }),
+                ],
+                next_index: None,
+            ),
+            (
+                trigger: (TimeReached: { tick: 50 }),
+                effects: [
+                    (ShowMessage: { key: "event-yellow-turban-start" }),
+                    (SpawnArmy: { faction: "rebels", coord: (q: 128, r: 128), count: 500 }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+
+    // ---- 黄巾余党事件链 ----
+    (
+        id: "chain_yellow_turban",
+        name: "黄巾余党",
+        repeat: false,
+        nodes: [
+            (
+                trigger: (And: [
+                    (TimeReached: { tick: 100 }),
+                    (FactionEliminated: { faction: "rebels" }),
+                ]),
+                effects: [
+                    (ShowMessage: { key: "event-yellow-turban-defeated" }),
+                    (GrantResources: { faction: "faction_player", gold: 1000, food: 500, wood: 0, iron: 0, stone: 0 }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+
+    // ---- 天灾事件链（循环） ----
+    (
+        id: "chain_disaster",
+        name: "天灾降临",
+        repeat: true,
+        nodes: [
+            (
+                trigger: (RandomChance: { probability: 0.08, cooldown_ticks: 150 }),
+                effects: [
+                    (ShowMessage: { key: "event-drought" }),
+                    (GrantResources: { faction: "faction_player", gold: 0, food: -200, wood: 0, iron: 0, stone: 0 }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+
+    // ---- 叛乱事件链（循环） ----
+    (
+        id: "chain_rebellion",
+        name: "叛乱四起",
+        repeat: true,
+        nodes: [
+            (
+                trigger: (RandomChance: { probability: 0.04, cooldown_ticks: 180 }),
+                effects: [
+                    (ShowMessage: { key: "event-rebellion" }),
+                    (SpawnArmy: { faction: "rebels", coord: (q: 100, r: 100), count: 300 }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+
+    // ---- 名将出世事件链（循环） ----
+    (
+        id: "chain_famous_general",
+        name: "名将出世",
+        repeat: true,
+        nodes: [
+            (
+                trigger: (RandomChance: { probability: 0.10, cooldown_ticks: 120 }),
+                effects: [
+                    (ShowMessage: { key: "event-famous-general-appears" }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+
+    // ---- 势力覆灭事件链 ----
+    (
+        id: "chain_faction_destroyed",
+        name: "势力覆灭",
+        repeat: false,
+        nodes: [
+            (
+                trigger: (FactionEliminated: { faction: "faction_liaodong" }),
+                effects: [
+                    (ShowMessage: { key: "event-liaodong-destroyed" }),
+                    (ChangeDiplomacy: { a: "faction_wei", b: "faction_player", delta: -20 }),
+                ],
+                next_index: Some(1),
+            ),
+            (
+                trigger: (FactionEliminated: { faction: "faction_nanzhong" }),
+                effects: [
+                    (ShowMessage: { key: "event-nanzhong-destroyed" }),
+                    (ChangeDiplomacy: { a: "faction_shu", b: "faction_player", delta: -10 }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+
+    // ---- 赤壁之战事件链 ----
+    (
+        id: "chain_chibi",
+        name: "赤壁之战",
+        repeat: false,
+        nodes: [
+            (
+                trigger: (And: [
+                    (TimeReached: { tick: 150 }),
+                    (TileOccupied: { coord: (q: 150, r: 120), by: "faction_wu" }),
+                ]),
+                effects: [
+                    (ShowMessage: { key: "event-chibi-battle" }),
+                    (ChangeDiplomacy: { a: "faction_shu", b: "faction_wu", delta: 30 }),
+                    (ChangeDiplomacy: { a: "faction_wei", b: "faction_wu", delta: -40 }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+
+    // ---- 夷陵之战事件链 ----
+    (
+        id: "chain_yiling",
+        name: "夷陵之战",
+        repeat: false,
+        nodes: [
+            (
+                trigger: (And: [
+                    (TimeReached: { tick: 250 }),
+                    (FactionResourceHigh: { faction: "faction_shu", resource: "food", threshold: 3000 }),
+                ]),
+                effects: [
+                    (ShowMessage: { key: "event-yiling-battle" }),
+                    (ChangeDiplomacy: { a: "faction_shu", b: "faction_wu", delta: -30 }),
+                    (SpawnArmy: { faction: "faction_shu", coord: (q: 60, r: 140), count: 2000 }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+
+    // ---- 北伐中原事件链 ----
+    (
+        id: "chain_northern_expedition",
+        name: "北伐中原",
+        repeat: false,
+        nodes: [
+            (
+                trigger: (And: [
+                    (TimeReached: { tick: 200 }),
+                    (FactionResourceHigh: { faction: "faction_shu", resource: "food", threshold: 3000 }),
+                ]),
+                effects: [
+                    (ShowMessage: { key: "event-northern-expedition" }),
+                    (SpawnArmy: { faction: "faction_shu", coord: (q: 60, r: 140), count: 3000 }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+
+    // ---- 丝绸之路事件链（循环） ----
+    (
+        id: "chain_silk_road",
+        name: "丝绸之路",
+        repeat: true,
+        nodes: [
+            (
+                trigger: (And: [
+                    (TimeReached: { tick: 120 }),
+                    (RandomChance: { probability: 0.03, cooldown_ticks: 50 }),
+                ]),
+                effects: [
+                    (ShowMessage: { key: "event-silk-road-trade" }),
+                    (GrantResources: { faction: "faction_player", gold: 500, food: 0, wood: 0, iron: 0, stone: 0 }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+
+    // ---- 瘟疫事件链（循环） ----
+    (
+        id: "chain_plague",
+        name: "瘟疫横行",
+        repeat: true,
+        nodes: [
+            (
+                trigger: (And: [
+                    (TimeReached: { tick: 80 }),
+                    (RandomChance: { probability: 0.02, cooldown_ticks: 300 }),
+                ]),
+                effects: [
+                    (ShowMessage: { key: "event-plague" }),
+                    (GrantResources: { faction: "faction_player", gold: 0, food: -300, wood: 0, iron: 0, stone: 0 }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+
+    // ---- 曹操劝降事件链 ----
+    (
+        id: "chain_cao_cao_ultimatum",
+        name: "曹操劝降",
+        repeat: false,
+        nodes: [
+            (
+                trigger: (And: [
+                    (TimeReached: { tick: 100 }),
+                    (FactionResourceHigh: { faction: "faction_wei", resource: "gold", threshold: 6000 }),
+                ]),
+                effects: [
+                    (ShowMessage: { key: "event-cao-cao-ultimatum" }),
+                    (ChangeDiplomacy: { a: "faction_wei", b: "faction_player", delta: -30 }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+
+    // ---- 玩家资源匮乏提示 ----
+    (
+        id: "chain_resource_warning",
+        name: "资源告急",
+        repeat: true,
+        nodes: [
+            (
+                trigger: (FactionResourceLow: { faction: "faction_player", resource: "food", threshold: 200 }),
+                effects: [
+                    (ShowMessage: { key: "event-food-low-warning" }),
+                ],
+                next_index: None,
+            ),
+        ],
+    ),
+]

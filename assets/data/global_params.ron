@@ -1,0 +1,24 @@
+// 全局参数（平衡调整版）
+// 字段与 slg-data config.rs GlobalParams 完全对齐
+// 所有倍率设为可玩基准值
+
+(
+    economy: (
+        resource_multiplier: 1.0,
+        build_cost_multiplier: 1.0,
+        recruit_cost_multiplier: 1.0,
+    ),
+    military: (
+        combat_damage_multiplier: 1.0,
+        march_speed_multiplier: 1.0,
+        exp_gain_multiplier: 1.0,
+    ),
+    map: (
+        tile_level_range: (1, 9),
+        resource_density: 0.3,
+    ),
+    diplomacy: (
+        relation_decay_per_tick: 0.1,
+        alliance_threshold: 50,
+    ),
+)

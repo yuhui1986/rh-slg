@@ -1,0 +1,9 @@
+[package]
+name = "slg-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+slg-core = { path = "../slg-core" }
+bevy = "0.15"
+bevy_egui = "0.33"

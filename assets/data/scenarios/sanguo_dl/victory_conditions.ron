@@ -1,0 +1,109 @@
+// 三国鼎立剧本胜利条件定义
+// 对应 Rust 类型: VictoryCondition (见 crates/slg-core/src/rule/victory.rs)
+// 格式: BTreeMap<FactionId, Vec<(label: String, condition: VictoryCondition)>>
+// 注意: OccupyRegion 中的 tiles 使用 TileKey (u64)，由 (q, r) 编码: ((r << 32) | q)
+//       此处坐标为占位值，实际应根据地图布局调整。
+
+{
+    // ---- 玩家胜利条件 ----
+    "faction_player": [
+        (
+            label: "占领洛阳",
+            condition: (OccupyRegion: {
+                tiles: [
+                    // (127, 79) (128, 79) (129, 79)
+                    // (127, 80) (128, 80) (129, 80)
+                    // (127, 81) (128, 81) (129, 81)
+                    339302416511, 339302416512, 339302416513,
+                    343597383807, 343597383808, 343597383809,
+                    347892351103, 347892351104, 347892351105,
+                ],
+                label: "洛阳",
+            }),
+        ),
+        (
+            label: "统一全国",
+            condition: (OccupyCount: { min_tiles: 10000 }),
+        ),
+        (
+            label: "存活一年",
+            condition: (SurviveTicks: { ticks: 3650 }),
+        ),
+        (
+            label: "富甲天下",
+            condition: (ResourceThreshold: { resource: "gold", amount: 50000 }),
+        ),
+    ],
+
+    // ---- 魏势力胜利条件 ----
+    "faction_wei": [
+        (
+            label: "魏统一天下",
+            condition: (OccupyCount: { min_tiles: 8000 }),
+        ),
+        (
+            label: "消灭蜀汉",
+            condition: (EliminateFaction: { faction: "faction_shu" }),
+        ),
+    ],
+
+    // ---- 蜀势力胜利条件 ----
+    "faction_shu": [
+        (
+            label: "蜀汉复兴",
+            condition: (OccupyCount: { min_tiles: 8000 }),
+        ),
+        (
+            label: "占领长安洛阳",
+            condition: (And: [
+                (OccupyRegion: {
+                    tiles: [343597383808],
+                    label: "洛阳",
+                }),
+                (OccupyRegion: {
+                    tiles: [339302416512],
+                    label: "长安",
+                }),
+            ]),
+        ),
+    ],
+
+    // ---- 吴势力胜利条件 ----
+    "faction_wu": [
+        (
+            label: "东吴称霸",
+            condition: (OccupyCount: { min_tiles: 8000 }),
+        ),
+        (
+            label: "占据江南",
+            condition: (OccupyCount: { min_tiles: 3000 }),
+        ),
+    ],
+
+    // ---- 辽东势力胜利条件 ----
+    "faction_liaodong": [
+        (
+            label: "辽东崛起",
+            condition: (OccupyCount: { min_tiles: 5000 }),
+        ),
+    ],
+
+    // ---- 南中势力胜利条件 ----
+    "faction_nanzhong": [
+        (
+            label: "南中称王",
+            condition: (OccupyCount: { min_tiles: 5000 }),
+        ),
+    ],
+
+    // ---- 失败条件（所有势力通用） ----
+    "_defeat": [
+        (
+            label: "势力覆灭",
+            condition: (OccupyCount: { min_tiles: 1 }),
+            // 注: min_tiles 设为 1 作为占位。
+            // 实际失败判定见 VictoryState::check_defeat()，
+            // 当势力 tile_owners 中无任何格子时判定失败。
+        ),
+    ],
+}

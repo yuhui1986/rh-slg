@@ -1,0 +1,68 @@
+// 三国鼎立剧本专属事件链
+// 仅在此剧本中触发
+
+[
+    (
+        id: "event_sanguo_three_kingdoms",
+        name: "三分天下",
+        trigger: "tick == 50",
+        effect: "diplomacy_lock:faction_wei,faction_shu,faction_wu,until=tick_300",
+        script_hook: Some("hook_three_kingdoms_formed"),
+    ),
+    (
+        id: "event_sanguo_chibi",
+        name: "赤壁之战",
+        // TODO: 平衡调整
+        trigger: "tick == 150",
+        effect: "battle_event:attacker=faction_wei,defender=faction_wu,alliance=faction_shu,location=chibi",
+        script_hook: Some("hook_battle_of_chibi"),
+    ),
+    (
+        id: "event_sanguo_yiling",
+        name: "夷陵之战",
+        // TODO: 平衡调整
+        trigger: "tick == 250 && faction_shu.relation(faction_wu) < -30",
+        effect: "battle_event:attacker=faction_shu,defender=faction_wu,location=yiling",
+        script_hook: Some("hook_battle_of_yiling"),
+    ),
+    (
+        id: "event_sanguo_northern_expedition",
+        name: "北伐中原",
+        // TODO: 平衡调整
+        trigger: "tick == 200 && faction_shu.has_general(\"general_shu_zhugeliang\")",
+        effect: "march_event:faction=faction_shu,target=faction_wei,army_strength=8000",
+        script_hook: Some("hook_northern_expedition"),
+    ),
+    (
+        id: "event_sanguo_liubei_death",
+        name: "刘备托孤",
+        // TODO: 平衡调整
+        trigger: "tick == 280",
+        effect: "general_retire:general=general_shu_liubei,transfer_skills=true",
+        script_hook: Some("hook_liubei_death"),
+    ),
+    (
+        id: "event_sanguo_cao_cao_ultimatum",
+        name: "曹操劝降",
+        // TODO: 平衡调整
+        trigger: "tick == 100 && faction_player.territory_count > 3",
+        effect: "diplomacy_event:from=faction_wei,to=faction_player,type=ultimatum",
+        script_hook: Some("hook_cao_cao_ultimatum"),
+    ),
+    (
+        id: "event_sanguo_trade_route",
+        name: "丝绸之路",
+        // TODO: 平衡调整
+        trigger: "tick > 120 && random_chance:0.03_per_tick",
+        effect: "resource_bonus:gold=500,all_factions=true",
+        script_hook: Some("hook_silk_road_trade"),
+    ),
+    (
+        id: "event_sanguo_plague",
+        name: "瘟疫横行",
+        // TODO: 平衡调整
+        trigger: "random_chance:0.02_per_tick && tick > 80",
+        effect: "debuff_all_factions:hp_reduction=0.1,duration=15",
+        script_hook: Some("hook_plague_outbreak"),
+    ),
+]

@@ -1,0 +1,52 @@
+// 兵种定义表（平衡调整版）
+// 字段与 slg-data config.rs UnitTypeDef 完全对齐
+// 克制三角：骑兵克弓兵、弓兵克步兵、步兵克骑兵，克制伤害 +15%
+// 地形简化为三种核心地形，便于平衡
+
+[
+    (
+        id: "unit_cavalry",
+        name: "骑兵",
+        attack: 120,
+        defense: 80,
+        hp: 100,
+        speed: 150,
+        recruit_cost: 200,
+        counter_target: "unit_archer",
+        terrain_adaptation: [
+            ("terrain_plains", 1.2),
+            ("terrain_forest", 0.8),
+            ("terrain_mountain", 0.6),
+        ],
+    ),
+    (
+        id: "unit_archer",
+        name: "弓兵",
+        attack: 100,
+        defense: 60,
+        hp: 80,
+        speed: 100,
+        recruit_cost: 150,
+        counter_target: "unit_infantry",
+        terrain_adaptation: [
+            ("terrain_plains", 1.0),
+            ("terrain_forest", 1.2),
+            ("terrain_mountain", 0.9),
+        ],
+    ),
+    (
+        id: "unit_infantry",
+        name: "步兵",
+        attack: 90,
+        defense: 120,
+        hp: 120,
+        speed: 80,
+        recruit_cost: 100,
+        counter_target: "unit_cavalry",
+        terrain_adaptation: [
+            ("terrain_plains", 1.0),
+            ("terrain_forest", 1.1),
+            ("terrain_mountain", 1.3),
+        ],
+    ),
+]

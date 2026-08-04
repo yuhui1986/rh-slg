@@ -1,0 +1,114 @@
+// 三国鼎立剧本定义
+// 6 个势力：魏、蜀、吴、辽东、南中、玩家
+//
+// NOTE: 此文件为设计参考文档，不参与运行时加载。
+// load_scenario_config() 当前未被任何运行时代码调用，
+// 且文件中的字段名与 ScenarioConfig/FactionSetup 结构体定义不完全匹配
+// （例如 main_city 使用 (q:, r:) 命名字段而结构体期望 (i32, i32) 元组、
+// victory_conditions 使用 condition_type 而非 label、缺少 is_player 等字段）。
+// 如需实际加载此文件，请先对齐结构体定义与本文件格式。
+
+(
+    id: "scenario_sanguo_dl",
+    name: "三国鼎立",
+    description: "汉末乱世，群雄逐鹿。魏蜀吴三分天下，玩家以独立势力崛起于乱世。",
+    map_size: (256, 256),
+    seed: 42,
+    factions: [
+        // 魏 - 北方霸主
+        (
+            id: "faction_wei",
+            name: "魏",
+            personality: (aggression: 0.8, expansion: 0.9, diplomacy: 0.4, caution: 0.5),
+            main_city: (q: 128, r: 80),
+            initial_territory_radius: 8,
+            initial_resources: (gold: 5000, food: 3000, wood: 2000, iron: 1000, stone: 500),
+            initial_generals: ["general_wei_caocao", "general_wei_simayi", "general_wei_zhangliao"],
+            color: (r: 0.2, g: 0.2, b: 0.8),
+        ),
+        // 蜀 - 西南之主
+        (
+            id: "faction_shu",
+            name: "蜀",
+            personality: (aggression: 0.5, expansion: 0.6, diplomacy: 0.7, caution: 0.6),
+            main_city: (q: 60, r: 140),
+            initial_territory_radius: 7,
+            initial_resources: (gold: 4000, food: 3500, wood: 2500, iron: 800, stone: 600),
+            initial_generals: ["general_shu_liubei", "general_shu_zhugeliang", "general_shu_guanyu"],
+            color: (r: 0.2, g: 0.7, b: 0.2),
+        ),
+        // 吴 - 东南之主
+        (
+            id: "faction_wu",
+            name: "吴",
+            personality: (aggression: 0.4, expansion: 0.5, diplomacy: 0.8, caution: 0.7),
+            main_city: (q: 180, r: 160),
+            initial_territory_radius: 7,
+            initial_resources: (gold: 4500, food: 3000, wood: 3000, iron: 700, stone: 400),
+            initial_generals: ["general_wu_sunquan", "general_wu_zhouyu", "general_wu_luxun"],
+            color: (r: 0.8, g: 0.2, b: 0.2),
+        ),
+        // 辽东 - 东北边陲
+        (
+            id: "faction_liaodong",
+            name: "辽东",
+            personality: (aggression: 0.3, expansion: 0.4, diplomacy: 0.5, caution: 0.8),
+            main_city: (q: 180, r: 40),
+            initial_territory_radius: 5,
+            initial_resources: (gold: 2500, food: 2500, wood: 1500, iron: 1200, stone: 300),
+            initial_generals: ["general_other_gongsunzan"],
+            color: (r: 0.6, g: 0.6, b: 0.6),
+        ),
+        // 南中 - 南方蛮族
+        (
+            id: "faction_nanzhong",
+            name: "南中",
+            personality: (aggression: 0.6, expansion: 0.3, diplomacy: 0.3, caution: 0.4),
+            main_city: (q: 70, r: 200),
+            initial_territory_radius: 5,
+            initial_resources: (gold: 2000, food: 4000, wood: 2000, iron: 600, stone: 400),
+            initial_generals: ["general_other_menghuo"],
+            color: (r: 0.5, g: 0.3, b: 0.1),
+        ),
+        // 玩家势力
+        (
+            id: "faction_player",
+            name: "玩家",
+            personality: (aggression: 0.5, expansion: 0.5, diplomacy: 0.5, caution: 0.5),
+            main_city: (q: 64, r: 128),
+            initial_territory_radius: 5,
+            initial_resources: (gold: 3000, food: 2000, wood: 1500, iron: 800, stone: 300),
+            initial_generals: [],
+            is_player: true,
+            color: (r: 1.0, g: 0.84, b: 0.0),
+        ),
+    ],
+    victory_conditions: [
+        (
+            condition_type: "occupy_city",
+            target: "city_luoyang",
+            description: "占领洛阳",
+        ),
+        (
+            condition_type: "unify",
+            description: "统一全部州",
+        ),
+        (
+            condition_type: "survive",
+            days: 365,
+            description: "存活 365 天",
+        ),
+    ],
+    initial_diplomacy: [
+        ("faction_wei", "faction_shu", -50),
+        ("faction_wei", "faction_wu", -30),
+        ("faction_wei", "faction_liaodong", -10),
+        ("faction_wei", "faction_nanzhong", -20),
+        ("faction_shu", "faction_wu", 20),
+        ("faction_shu", "faction_liaodong", 0),
+        ("faction_shu", "faction_nanzhong", -30),
+        ("faction_wu", "faction_liaodong", 0),
+        ("faction_wu", "faction_nanzhong", -10),
+        ("faction_liaodong", "faction_nanzhong", 10),
+    ],
+)

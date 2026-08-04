@@ -1,0 +1,1154 @@
+// 战法定义表（完整数据）
+// 字段与 slg-data config.rs SkillDef 完全对齐
+// 55 个战法：8 主动、5 被动（可习得）、5 指挥、4 突击、33 固有被动
+
+[
+    // ================================================================
+    // 可习得战法 - 主动战法（Active）x8
+    // ================================================================
+    (
+        id: "skill_active_luolei",
+        name: "落雷",
+        skill_type: Active,
+        trigger_rate: 0.35,
+        target_strategy: "random_enemy",
+        damage: Magical {
+            base: 80.0,
+            int_ratio: 0.6,
+        },
+        effects: [
+            (
+                effect_type: "damage",
+                value: 80.0,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wei_guojia"),
+    ),
+    (
+        id: "skill_active_huogong",
+        name: "火攻",
+        skill_type: Active,
+        trigger_rate: 0.40,
+        target_strategy: "aoe_enemies",
+        damage: Magical {
+            base: 60.0,
+            int_ratio: 0.7,
+        },
+        effects: [
+            (
+                effect_type: "burn",
+                value: 30.0,
+                duration: 3,
+            ),
+        ],
+        source_general: Some("general_wu_zhouyu"),
+    ),
+    (
+        id: "skill_active_luofeng",
+        name: "落凤",
+        skill_type: Active,
+        trigger_rate: 0.30,
+        target_strategy: "highest_str_enemy",
+        damage: Magical {
+            base: 100.0,
+            int_ratio: 0.8,
+        },
+        effects: [
+            (
+                effect_type: "stun",
+                value: 1.0,
+                duration: 1,
+            ),
+        ],
+        source_general: Some("general_shu_pangtong"),
+    ),
+    (
+        id: "skill_active_yiqidangqian_a",
+        name: "一骑当千·策",
+        skill_type: Active,
+        trigger_rate: 0.35,
+        target_strategy: "random_enemy",
+        damage: Physical {
+            base: 90.0,
+            str_ratio: 0.8,
+        },
+        effects: [
+            (
+                effect_type: "damage",
+                value: 90.0,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_shu_guanyu"),
+    ),
+    (
+        id: "skill_active_fanjian",
+        name: "反间",
+        skill_type: Active,
+        trigger_rate: 0.30,
+        target_strategy: "highest_int_enemy",
+        damage: Magical {
+            base: 40.0,
+            int_ratio: 0.5,
+        },
+        effects: [
+            (
+                effect_type: "confuse",
+                value: 1.0,
+                duration: 2,
+            ),
+        ],
+        source_general: Some("general_wu_zhouyu"),
+    ),
+    (
+        id: "skill_active_lianhuan",
+        name: "连环",
+        skill_type: Active,
+        trigger_rate: 0.35,
+        target_strategy: "aoe_enemies",
+        damage: Magical {
+            base: 50.0,
+            int_ratio: 0.5,
+        },
+        effects: [
+            (
+                effect_type: "chain",
+                value: 1.0,
+                duration: 2,
+            ),
+        ],
+        source_general: Some("general_shu_pangtong"),
+    ),
+    (
+        id: "skill_active_gaguoliaodu",
+        name: "刮骨疗毒",
+        skill_type: Active,
+        trigger_rate: 0.40,
+        target_strategy: "lowest_hp_ally",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "heal",
+                value: 120.0,
+                duration: 0,
+            ),
+            (
+                effect_type: "cleanse",
+                value: 1.0,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_shu_guanyu"),
+    ),
+    (
+        id: "skill_active_beisheguiche",
+        name: "杯蛇鬼车",
+        skill_type: Active,
+        trigger_rate: 0.30,
+        target_strategy: "aoe_enemies",
+        damage: Magical {
+            base: 70.0,
+            int_ratio: 0.6,
+        },
+        effects: [
+            (
+                effect_type: "fear",
+                value: 1.0,
+                duration: 2,
+            ),
+        ],
+        source_general: Some("general_wei_simayi"),
+    ),
+
+    // ================================================================
+    // 可习得战法 - 被动战法（Passive）x5
+    // ================================================================
+    (
+        id: "skill_passive_tieqi",
+        name: "铁骑",
+        skill_type: Passive,
+        trigger_rate: 1.0,
+        target_strategy: "self",
+        damage: Physical {
+            base: 0.0,
+            str_ratio: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "buff_attack",
+                value: 0.15,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wu_zhouyu"),
+    ),
+    (
+        id: "skill_passive_gongqibubei",
+        name: "攻其不备",
+        skill_type: Passive,
+        trigger_rate: 1.0,
+        target_strategy: "self",
+        damage: Physical {
+            base: 50.0,
+            str_ratio: 0.4,
+        },
+        effects: [
+            (
+                effect_type: "surprise_attack",
+                value: 1.5,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wei_zhangliao"),
+    ),
+    (
+        id: "skill_passive_baiqijieying",
+        name: "百骑劫营",
+        skill_type: Passive,
+        trigger_rate: 1.0,
+        target_strategy: "self",
+        damage: Physical {
+            base: 60.0,
+            str_ratio: 0.5,
+        },
+        effects: [
+            (
+                effect_type: "raiding",
+                value: 1.3,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wu_ganning"),
+    ),
+    (
+        id: "skill_passive_bishijixu",
+        name: "避实击虚",
+        skill_type: Passive,
+        trigger_rate: 1.0,
+        target_strategy: "self",
+        damage: Physical {
+            base: 0.0,
+            str_ratio: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "buff_defense",
+                value: 0.20,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wei_dianwei"),
+    ),
+    (
+        id: "skill_passive_fengshizhen",
+        name: "锋矢阵",
+        skill_type: Passive,
+        trigger_rate: 1.0,
+        target_strategy: "self",
+        damage: Physical {
+            base: 0.0,
+            str_ratio: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "formation_attack",
+                value: 0.25,
+                duration: 0,
+            ),
+            (
+                effect_type: "formation_defense",
+                value: -0.10,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_shu_guanyu"),
+    ),
+
+    // ================================================================
+    // 可习得战法 - 指挥战法（Command）x5
+    // ================================================================
+    (
+        id: "skill_command_bamenjinsuo",
+        name: "八门金锁",
+        skill_type: Command,
+        trigger_rate: 1.0,
+        target_strategy: "all_enemies",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "speed_debuff",
+                value: 0.30,
+                duration: 3,
+            ),
+        ],
+        source_general: Some("general_shu_zhugeliang"),
+    ),
+    (
+        id: "skill_command_wudangfeijun",
+        name: "无当飞军",
+        skill_type: Command,
+        trigger_rate: 1.0,
+        target_strategy: "all_allies",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "buff_speed",
+                value: 0.15,
+                duration: 0,
+            ),
+            (
+                effect_type: "buff_attack",
+                value: 0.10,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_shu_jiangwei"),
+    ),
+    (
+        id: "skill_command_baiyicong",
+        name: "白马义从",
+        skill_type: Command,
+        trigger_rate: 1.0,
+        target_strategy: "all_allies",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "buff_speed",
+                value: 0.25,
+                duration: 0,
+            ),
+            (
+                effect_type: "first_strike",
+                value: 1.0,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_other_gongsunzan"),
+    ),
+    (
+        id: "skill_command_dajishi",
+        name: "大戟士",
+        skill_type: Command,
+        trigger_rate: 1.0,
+        target_strategy: "all_allies",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "buff_defense",
+                value: 0.20,
+                duration: 0,
+            ),
+            (
+                effect_type: "counter_attack",
+                value: 0.15,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_other_yuanshao"),
+    ),
+    (
+        id: "skill_command_fengshizhen_cmd",
+        name: "锋矢阵·指挥",
+        skill_type: Command,
+        trigger_rate: 1.0,
+        target_strategy: "all_allies",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "formation_charge",
+                value: 0.30,
+                duration: 3,
+            ),
+        ],
+        source_general: Some("general_shu_machao"),
+    ),
+
+    // ================================================================
+    // 可习得战法 - 突击战法（Rush）x4
+    // ================================================================
+    (
+        id: "skill_rush_yiqidangqian",
+        name: "一骑当千",
+        skill_type: Rush,
+        trigger_rate: 0.40,
+        target_strategy: "front_enemy",
+        damage: Physical {
+            base: 120.0,
+            str_ratio: 0.9,
+        },
+        effects: [
+            (
+                effect_type: "damage",
+                value: 120.0,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_shu_guanyu"),
+    ),
+    (
+        id: "skill_rush_baoliewuren",
+        name: "暴戾无仁",
+        skill_type: Rush,
+        trigger_rate: 0.35,
+        target_strategy: "front_enemy",
+        damage: Physical {
+            base: 100.0,
+            str_ratio: 0.8,
+        },
+        effects: [
+            (
+                effect_type: "damage",
+                value: 100.0,
+                duration: 0,
+            ),
+            (
+                effect_type: "bleed",
+                value: 20.0,
+                duration: 3,
+            ),
+        ],
+        source_general: Some("general_other_lvbu"),
+    ),
+    (
+        id: "skill_rush_zhechongyuwu",
+        name: "折冲御侮",
+        skill_type: Rush,
+        trigger_rate: 0.35,
+        target_strategy: "front_enemy",
+        damage: Physical {
+            base: 80.0,
+            str_ratio: 0.7,
+        },
+        effects: [
+            (
+                effect_type: "damage",
+                value: 80.0,
+                duration: 0,
+            ),
+            (
+                effect_type: "defense_break",
+                value: 0.15,
+                duration: 2,
+            ),
+        ],
+        source_general: Some("general_wu_ganning"),
+    ),
+    (
+        id: "skill_rush_shouqidaoluo",
+        name: "手起刀落",
+        skill_type: Rush,
+        trigger_rate: 0.35,
+        target_strategy: "front_enemy",
+        damage: Physical {
+            base: 90.0,
+            str_ratio: 0.7,
+        },
+        effects: [
+            (
+                effect_type: "damage",
+                value: 90.0,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wei_xuchu"),
+    ),
+
+    // ================================================================
+    // 固有被动战法（Innate Passive）x33 - 武将自带
+    // ================================================================
+
+    // --- 魏 ---
+    (
+        id: "skill_passive_jianxiong",
+        name: "奸雄",
+        skill_type: Passive,
+        trigger_rate: 0.40,
+        target_strategy: "self",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "buff_all_stats",
+                value: 0.08,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wei_caocao"),
+    ),
+    (
+        id: "skill_passive_langgu",
+        name: "狼顾",
+        skill_type: Passive,
+        trigger_rate: 0.35,
+        target_strategy: "self",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "buff_intelligence",
+                value: 0.15,
+                duration: 0,
+            ),
+            (
+                effect_type: "detect_trap",
+                value: 1.0,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wei_simayi"),
+    ),
+    (
+        id: "skill_passive_weizhen",
+        name: "威震",
+        skill_type: Passive,
+        trigger_rate: 0.30,
+        target_strategy: "self",
+        damage: Physical {
+            base: 40.0,
+            str_ratio: 0.3,
+        },
+        effects: [
+            (
+                effect_type: "fear_aoe",
+                value: 1.0,
+                duration: 1,
+            ),
+        ],
+        source_general: Some("general_wei_zhangliao"),
+    ),
+    (
+        id: "skill_passive_huwei",
+        name: "虎卫",
+        skill_type: Passive,
+        trigger_rate: 0.50,
+        target_strategy: "self",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "taunt",
+                value: 1.0,
+                duration: 1,
+            ),
+            (
+                effect_type: "buff_defense",
+                value: 0.30,
+                duration: 1,
+            ),
+        ],
+        source_general: Some("general_wei_xuchu"),
+    ),
+    (
+        id: "skill_passive_ganglie",
+        name: "刚烈",
+        skill_type: Passive,
+        trigger_rate: 0.45,
+        target_strategy: "self",
+        damage: Physical {
+            base: 30.0,
+            str_ratio: 0.2,
+        },
+        effects: [
+            (
+                effect_type: "counter_damage",
+                value: 0.25,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wei_xiahoudun"),
+    ),
+    (
+        id: "skill_passive_jiuzhu",
+        name: "救主",
+        skill_type: Passive,
+        trigger_rate: 0.35,
+        target_strategy: "ally_general",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "shield",
+                value: 100.0,
+                duration: 2,
+            ),
+        ],
+        source_general: Some("general_wei_dianwei"),
+    ),
+    (
+        id: "skill_passive_guicai",
+        name: "鬼才",
+        skill_type: Passive,
+        trigger_rate: 0.40,
+        target_strategy: "self",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "buff_trigger_rate",
+                value: 0.15,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wei_guojia"),
+    ),
+    (
+        id: "skill_passive_jieming",
+        name: "节命",
+        skill_type: Passive,
+        trigger_rate: 0.30,
+        target_strategy: "all_allies",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "resource_save",
+                value: 0.10,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wei_xunyu"),
+    ),
+    (
+        id: "skill_passive_jushou",
+        name: "据守",
+        skill_type: Passive,
+        trigger_rate: 0.50,
+        target_strategy: "self",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "buff_defense",
+                value: 0.25,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wei_caoren"),
+    ),
+    (
+        id: "skill_passive_duanliang",
+        name: "断粮",
+        skill_type: Passive,
+        trigger_rate: 0.30,
+        target_strategy: "enemy_army",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "food_debuff",
+                value: 0.20,
+                duration: 3,
+            ),
+        ],
+        source_general: Some("general_wei_xuhuang"),
+    ),
+
+    // --- 蜀 ---
+    (
+        id: "skill_passive_rende",
+        name: "仁德",
+        skill_type: Passive,
+        trigger_rate: 0.40,
+        target_strategy: "all_allies",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "morale_boost",
+                value: 0.15,
+                duration: 0,
+            ),
+            (
+                effect_type: "heal_over_time",
+                value: 20.0,
+                duration: 3,
+            ),
+        ],
+        source_general: Some("general_shu_liubei"),
+    ),
+    (
+        id: "skill_passive_kongming",
+        name: "空城",
+        skill_type: Passive,
+        trigger_rate: 0.30,
+        target_strategy: "self",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "evasion",
+                value: 0.25,
+                duration: 0,
+            ),
+            (
+                effect_type: "buff_intelligence",
+                value: 0.10,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_shu_zhugeliang"),
+    ),
+    (
+        id: "skill_passive_wusheng",
+        name: "武圣",
+        skill_type: Passive,
+        trigger_rate: 0.35,
+        target_strategy: "self",
+        damage: Physical {
+            base: 60.0,
+            str_ratio: 0.5,
+        },
+        effects: [
+            (
+                effect_type: "critical_boost",
+                value: 0.20,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_shu_guanyu"),
+    ),
+    (
+        id: "skill_passive_paoxiao",
+        name: "咆哮",
+        skill_type: Passive,
+        trigger_rate: 0.40,
+        target_strategy: "self",
+        damage: Physical {
+            base: 50.0,
+            str_ratio: 0.4,
+        },
+        effects: [
+            (
+                effect_type: "double_attack",
+                value: 0.25,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_shu_zhangfei"),
+    ),
+    (
+        id: "skill_passive_longdan",
+        name: "龙胆",
+        skill_type: Passive,
+        trigger_rate: 0.40,
+        target_strategy: "self",
+        damage: Physical {
+            base: 40.0,
+            str_ratio: 0.3,
+        },
+        effects: [
+            (
+                effect_type: "counter_attack",
+                value: 0.30,
+                duration: 0,
+            ),
+            (
+                effect_type: "evasion",
+                value: 0.15,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_shu_zhaoyun"),
+    ),
+    (
+        id: "skill_passive_xiliqi",
+        name: "西凉骑",
+        skill_type: Passive,
+        trigger_rate: 0.50,
+        target_strategy: "self",
+        damage: Physical {
+            base: 0.0,
+            str_ratio: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "buff_cavalry_attack",
+                value: 0.20,
+                duration: 0,
+            ),
+            (
+                effect_type: "buff_speed",
+                value: 0.10,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_shu_machao"),
+    ),
+    (
+        id: "skill_passive_baifa",
+        name: "百发百中",
+        skill_type: Passive,
+        trigger_rate: 0.45,
+        target_strategy: "self",
+        damage: Physical {
+            base: 30.0,
+            str_ratio: 0.3,
+        },
+        effects: [
+            (
+                effect_type: "accuracy_boost",
+                value: 0.25,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_shu_huangzhong"),
+    ),
+    (
+        id: "skill_passive_fangu",
+        name: "反骨",
+        skill_type: Passive,
+        trigger_rate: 0.30,
+        target_strategy: "self",
+        damage: Physical {
+            base: 40.0,
+            str_ratio: 0.3,
+        },
+        effects: [
+            (
+                effect_type: "buff_attack_when_low_hp",
+                value: 0.30,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_shu_weiyan"),
+    ),
+    (
+        id: "skill_passive_tiaoxin",
+        name: "挑衅",
+        skill_type: Passive,
+        trigger_rate: 0.35,
+        target_strategy: "enemy_general",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "taunt",
+                value: 1.0,
+                duration: 2,
+            ),
+            (
+                effect_type: "buff_defense",
+                value: 0.15,
+                duration: 2,
+            ),
+        ],
+        source_general: Some("general_shu_jiangwei"),
+    ),
+    (
+        id: "skill_passive_lianhuan",
+        name: "连环计",
+        skill_type: Passive,
+        trigger_rate: 0.30,
+        target_strategy: "self",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "debuff_enemy_defense",
+                value: 0.15,
+                duration: 2,
+            ),
+        ],
+        source_general: Some("general_shu_pangtong"),
+    ),
+
+    // --- 吴 ---
+    (
+        id: "skill_passive_jiuyuan",
+        name: "救援",
+        skill_type: Passive,
+        trigger_rate: 0.35,
+        target_strategy: "all_allies",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "heal",
+                value: 60.0,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wu_sunquan"),
+    ),
+    (
+        id: "skill_passive_fanzhi",
+        name: "反制",
+        skill_type: Passive,
+        trigger_rate: 0.40,
+        target_strategy: "self",
+        damage: Magical {
+            base: 50.0,
+            int_ratio: 0.4,
+        },
+        effects: [
+            (
+                effect_type: "counter_magic",
+                value: 0.30,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wu_zhouyu"),
+    ),
+    (
+        id: "skill_passive_huoshi",
+        name: "火矢",
+        skill_type: Passive,
+        trigger_rate: 0.35,
+        target_strategy: "self",
+        damage: Magical {
+            base: 40.0,
+            int_ratio: 0.4,
+        },
+        effects: [
+            (
+                effect_type: "burn_arrow",
+                value: 25.0,
+                duration: 3,
+            ),
+        ],
+        source_general: Some("general_wu_luxun"),
+    ),
+    (
+        id: "skill_passive_qixi",
+        name: "奇袭",
+        skill_type: Passive,
+        trigger_rate: 0.35,
+        target_strategy: "self",
+        damage: Physical {
+            base: 60.0,
+            str_ratio: 0.4,
+        },
+        effects: [
+            (
+                effect_type: "ambush",
+                value: 1.5,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wu_ganning"),
+    ),
+    (
+        id: "skill_passive_shenwei",
+        name: "神威",
+        skill_type: Passive,
+        trigger_rate: 0.35,
+        target_strategy: "self",
+        damage: Physical {
+            base: 50.0,
+            str_ratio: 0.4,
+        },
+        effects: [
+            (
+                effect_type: "buff_strength",
+                value: 0.15,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wu_taishici"),
+    ),
+    (
+        id: "skill_passive_keji",
+        name: "克己",
+        skill_type: Passive,
+        trigger_rate: 0.40,
+        target_strategy: "self",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "exp_boost",
+                value: 0.20,
+                duration: 0,
+            ),
+            (
+                effect_type: "buff_command",
+                value: 0.10,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_wu_lvmeng"),
+    ),
+    (
+        id: "skill_passive_kurou",
+        name: "苦肉",
+        skill_type: Passive,
+        trigger_rate: 0.30,
+        target_strategy: "self",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "self_damage",
+                value: 0.10,
+                duration: 0,
+            ),
+            (
+                effect_type: "buff_attack",
+                value: 0.30,
+                duration: 3,
+            ),
+        ],
+        source_general: Some("general_wu_huanggai"),
+    ),
+    (
+        id: "skill_passive_jieyin",
+        name: "结姻",
+        skill_type: Passive,
+        trigger_rate: 0.30,
+        target_strategy: "ally_general",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "heal_over_time",
+                value: 30.0,
+                duration: 3,
+            ),
+            (
+                effect_type: "morale_boost",
+                value: 0.10,
+                duration: 3,
+            ),
+        ],
+        source_general: Some("general_wu_sunshangxiang"),
+    ),
+
+    // --- 群雄 ---
+    (
+        id: "skill_passive_feijiang",
+        name: "飞将",
+        skill_type: Passive,
+        trigger_rate: 0.45,
+        target_strategy: "self",
+        damage: Physical {
+            base: 70.0,
+            str_ratio: 0.5,
+        },
+        effects: [
+            (
+                effect_type: "buff_speed",
+                value: 0.20,
+                duration: 0,
+            ),
+            (
+                effect_type: "buff_attack",
+                value: 0.15,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_other_lvbu"),
+    ),
+    (
+        id: "skill_passive_baonue",
+        name: "暴虐",
+        skill_type: Passive,
+        trigger_rate: 0.35,
+        target_strategy: "self",
+        damage: Physical {
+            base: 40.0,
+            str_ratio: 0.3,
+        },
+        effects: [
+            (
+                effect_type: "life_steal",
+                value: 0.15,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_other_dongzhuo"),
+    ),
+    (
+        id: "skill_passive_menfa",
+        name: "门阀",
+        skill_type: Passive,
+        trigger_rate: 0.40,
+        target_strategy: "self",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "resource_bonus",
+                value: 0.15,
+                duration: 0,
+            ),
+            (
+                effect_type: "recruit_discount",
+                value: 0.10,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_other_yuanshao"),
+    ),
+    (
+        id: "skill_passive_baima",
+        name: "白马将军",
+        skill_type: Passive,
+        trigger_rate: 0.40,
+        target_strategy: "self",
+        damage: Physical {
+            base: 40.0,
+            str_ratio: 0.3,
+        },
+        effects: [
+            (
+                effect_type: "buff_cavalry_speed",
+                value: 0.20,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_other_gongsunzan"),
+    ),
+    (
+        id: "skill_passive_huoshou",
+        name: "祸首",
+        skill_type: Passive,
+        trigger_rate: 0.35,
+        target_strategy: "self",
+        damage: Fixed {
+            base: 0.0,
+        },
+        effects: [
+            (
+                effect_type: "buff_infantry_defense",
+                value: 0.20,
+                duration: 0,
+            ),
+            (
+                effect_type: "terrain_mastery",
+                value: 1.0,
+                duration: 0,
+            ),
+        ],
+        source_general: Some("general_other_menghuo"),
+    ),
+]
