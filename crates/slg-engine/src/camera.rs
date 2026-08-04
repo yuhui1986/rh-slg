@@ -278,16 +278,24 @@ fn hex_pick(
 ///
 /// 公式来源：Red Blob Games hex grid guide
 /// https://www.redblobgames.com/grids/hexagons/#pixel-to-hex
+///
+/// # round 参数顺序重要
+/// `HexCoord::round(x, y, z)` 接收 **cube** 坐标 (x, y, z)。
+/// axial (q, r) → cube (x, y, z) 的转换是 `x=q, y=-q-r, z=r`。
+/// 之前版本传 (q, r, -q-r) = (x, z, y) 顺序错，导致 from_cube 把 z 当 r，
+/// round 结果的 r 用了错误的 -q-r。**这是 `hex_pick` 鼠标拾取错位的根因**。
 fn world_to_hex(world_pos: Vec2) -> HexCoord {
     let x = world_pos.x;
     let y = world_pos.y;
     let size = HEX_SIZE;
 
-    // pointy-top 逆变换
+    // pointy-top 逆变换：算 axial (q, r)
     let q = (3.0_f32.sqrt() / 3.0 * x - 1.0 / 3.0 * y) / size;
     let r = (2.0 / 3.0 * y) / size;
 
-    HexCoord::round(q as f64, r as f64, (-q - r) as f64)
+    // axial → cube: x=q, y=-q-r, z=r
+    // 传给 round 的必须是 cube (x, y, z) 顺序
+    HexCoord::round(q as f64, (-q - r) as f64, r as f64)
 }
 
 // ---------------------------------------------------------------------------
@@ -554,6 +562,55 @@ mod tests {
             "expected ≈ 0.667 for 256x256 hex map in 1280x720 (80% margin), got {}",
             s
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // world_to_hex 单元测试：把 hex→world 公式反过来验证
+    // -----------------------------------------------------------------------
+
+    /// world (0, 0) → hex (0, 0)
+    #[test]
+    fn world_to_hex_origin() {
+        let h = world_to_hex(Vec2::new(0.0, 0.0));
+        assert_eq!(h, HexCoord::new(0, 0));
+    }
+
+    /// round-trip: hex → world → hex 应得到原 hex
+    #[test]
+    fn world_to_hex_round_trip() {
+        for q in 0..10i32 {
+            for r in 0..10i32 {
+                let h = HexCoord::new(q, r);
+                let w = hex_world_position(h);
+                let h2 = world_to_hex(w);
+                assert_eq!(h, h2, "round-trip failed for hex=({},{})", q, r);
+            }
+        }
+    }
+
+    /// 玩家主城 hex (68, 65) → world → hex 应该回到 (68, 65)
+    #[test]
+    fn world_to_hex_player_main_city() {
+        let h = HexCoord::new(68, 65);
+        let w = hex_world_position(h);
+        let h2 = world_to_hex(w);
+        assert_eq!(h, h2, "玩家主城 round-trip 失败");
+    }
+
+    /// 邻接 1 hex：q+1 同 row
+    /// axial q=1, r=0 → world (sqrt(3), 0) ≈ (1.732, 0)
+    /// world_to_hex (1.732, 0) → (1, 0)
+    #[test]
+    fn world_to_hex_east_neighbor() {
+        let h = world_to_hex(Vec2::new(1.732, 0.0));
+        assert_eq!(h, HexCoord::new(1, 0));
+    }
+
+    /// 邻接东南：axial (0, 1) → world (sqrt(3)/2, 1.5) ≈ (0.866, 1.5)
+    #[test]
+    fn world_to_hex_southeast_neighbor() {
+        let h = world_to_hex(Vec2::new(0.866, 1.5));
+        assert_eq!(h, HexCoord::new(0, 1));
     }
 
     /// 128×128 hex 地图 margin=1.0 → 填满视口高度
