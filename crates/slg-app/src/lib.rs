@@ -895,13 +895,48 @@ fn process_tick_phases(
                     march_res.manager.cleanup_finished();
                 }
                 TickPhase::AIDecision => {
-                    // AI 决策（错峰）
-                    for (i, (_faction_id, _faction)) in
+                    // AI 决策（错峰 + 简化扩张）
+                    // M5: 6 个 faction 都跑 AIDecision，但只有 AI faction (有 main_city + 邻接可占领) 才派兵
+                    //   - 玩家 faction_1 (index 0) slot=0 也会跑，但 main_city 不会跑 AI
+                    //     （玩家主城不会被 AI 覆盖派兵，玩家继续手动控制）
+                    //   - AI faction_2~6 (index 1~5) slot 1~5
+                    //   - 用 MarchManager dispatch，与玩家共用同一行军链路
+                    let current_tick = game_state.tick;
+                    for (i, (faction_id, faction)) in
                         faction_res.store.factions.iter_mut().enumerate()
                     {
-                        if should_ai_decide(game_state.tick, i as u8) {
-                            // 简化 AI：后续填充完整实现
-                            // 完整实现在 slg-core::ai::tick_ai
+                        // 错峰: 10 tick 一轮, slot = i (i=0..5)
+                        if !should_ai_decide(current_tick, i as u8) {
+                            continue;
+                        }
+                        // AI 须有主城
+                        let Some(main_city) = faction.main_city else {
+                            continue;
+                        };
+                        // 找扩张目标
+                        let target = slg_core::military::ai_expansion_target(
+                            faction_id,
+                            main_city,
+                            &mut territory_res.manager,
+                            &terrain_map.map,
+                        );
+                        if let Some(target) = target {
+                            // 派兵（用 MarchManager + MarchAdvance 阶段落地）
+                            let order = march_res.manager.dispatch(
+                                faction_id.clone(),
+                                main_city,
+                                target,
+                                slg_core::military::TROOPS_PER_MARCH,
+                                current_tick,
+                            );
+                            // 揭迷雾（AI 派兵也会揭开）
+                            for c in &order.path {
+                                fog_res.fog.reveal_one(*c);
+                            }
+                            info!(
+                                "[AIDecision] AI {} 派兵 from=({},{}) to=({},{}) arrive_tick={}",
+                                faction_id, main_city.q, main_city.r, target.q, target.r, order.arrive_tick
+                            );
                         }
                     }
                 }
@@ -2100,6 +2135,176 @@ mod bevy_tests {
         let march = app.world().resource::<MarchManagerResource>();
         assert_eq!(march.manager.orders.len(), 0, "已 own 的格不能再次攻占");
         eprintln!("TEST12 ✅: 已 own 的格不能再次攻占");
+    }
+
+    /// 测试 13：AI 派兵系统 - AI faction_2 在自己的 slot tick 派兵
+    ///
+    /// 模拟：faction_2 (slot 1) 应该在 tick 1, 11, 21... 派兵
+    /// 这里让 current_tick = 1（slot 1 的回合）
+    #[test]
+    fn bevy_ai_dispatches_march_on_own_slot() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        add_ai_factions(app.world_mut());
+
+        app.add_systems(Update, process_tick_phases);
+
+        // 设 tick = 1 (slot 1 = AI faction_2)
+        {
+            let mut clock = app
+                .world_mut()
+                .resource_mut::<slg_engine::systems::GameClockResource>();
+            clock.clock.current_tick = 1;
+            app.world_mut().resource_mut::<GameState>().tick = 1;
+        }
+        app.update();
+
+        // 验证: AI faction_2 派了 1 队兵
+        let march = app.world().resource::<MarchManagerResource>();
+        let ai2_orders: Vec<_> = march
+            .manager
+            .orders
+            .values()
+            .filter(|o| o.faction_id == "faction_2")
+            .collect();
+        assert_eq!(ai2_orders.len(), 1, "AI faction_2 应在 slot 1 派 1 队兵");
+        let order = ai2_orders[0];
+        assert_eq!(order.from, HexCoord::new(30, 30), "from = AI 主城");
+        eprintln!(
+            "TEST13 ✅: AI faction_2 在 tick 1 派兵 from=({},{}) to=({},{})",
+            order.from.q, order.from.r, order.to.q, order.to.r
+        );
+    }
+
+    /// 测试 14：AI 派兵后推进 tick → AI 占地
+    #[test]
+    fn bevy_ai_full_dispatch_arrive_occupy() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        add_ai_factions(app.world_mut());
+
+        app.add_systems(Update, process_tick_phases);
+
+        // tick = 1 派兵
+        {
+            let mut clock = app
+                .world_mut()
+                .resource_mut::<slg_engine::systems::GameClockResource>();
+            clock.clock.current_tick = 1;
+            app.world_mut().resource_mut::<GameState>().tick = 1;
+        }
+        app.update();
+
+        // 推进 5 tick 让兵到达
+        for _ in 0..5 {
+            {
+                let mut clock = app
+                    .world_mut()
+                    .resource_mut::<slg_engine::systems::GameClockResource>();
+                clock.clock.current_tick += 1;
+            }
+            app.update();
+        }
+
+        // 验证: AI 占地数 = 2 (主城 + 1 邻接)
+        let tm = app.world().resource::<TerritoryManagerResource>();
+        let ai2_count = tm
+            .manager
+            .owner_map
+            .values()
+            .filter(|f| f == &"faction_2")
+            .count();
+        assert_eq!(ai2_count, 2, "AI 派兵落地后应占 2 格");
+        eprintln!("TEST14 ✅: AI faction_2 派兵 → 5 tick → 占 2 格");
+    }
+
+    /// 测试 15：错峰 - tick=1 只有 faction_2 (slot 1) 派兵，其它不派
+    #[test]
+    fn bevy_ai_only_dispatches_on_own_slot() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        add_ai_factions(app.world_mut());
+
+        app.add_systems(Update, process_tick_phases);
+
+        // tick = 1, slot 1 = faction_2
+        {
+            let mut clock = app
+                .world_mut()
+                .resource_mut::<slg_engine::systems::GameClockResource>();
+            clock.clock.current_tick = 1;
+            app.world_mut().resource_mut::<GameState>().tick = 1;
+        }
+        app.update();
+
+        // 验证: 只有 faction_2 派兵，其它 4 个 AI 都没派
+        let march = app.world().resource::<MarchManagerResource>();
+        let mut ai_orders: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
+        for o in march.manager.orders.values() {
+            *ai_orders.entry(o.faction_id.clone()).or_insert(0) += 1;
+        }
+        assert_eq!(ai_orders.get("faction_2").copied().unwrap_or(0), 1);
+        for fid in ["faction_3", "faction_4", "faction_5", "faction_6"] {
+            assert_eq!(
+                ai_orders.get(fid).copied().unwrap_or(0),
+                0,
+                "{} 在 tick=1 不应派兵",
+                fid
+            );
+        }
+        eprintln!("TEST15 ✅: 错峰生效, tick=1 只有 faction_2 派兵");
+    }
+
+    /// 加 5 个 AI faction（faction_2~6）到 world
+    /// 每个 AI 有自己的主城，territory 上 own 主城
+    /// - faction_2: (30, 30)
+    /// - faction_3: (60, 30)
+    /// - faction_4: (90, 30)
+    /// - faction_5: (30, 90)
+    /// - faction_6: (60, 90)
+    ///
+    /// 每次只借一个资源的 mutable borrow，避免重叠 borrow 错误
+    fn add_ai_factions(world: &mut World) {
+        let ai_data: Vec<(&str, i32, i32)> = vec![
+            ("faction_2", 30, 30),
+            ("faction_3", 60, 30),
+            ("faction_4", 90, 30),
+            ("faction_5", 30, 90),
+            ("faction_6", 60, 90),
+        ];
+        for (i, (fid, q, r)) in ai_data.iter().enumerate() {
+            let c = HexCoord::new(*q, *r);
+            // FactionState
+            {
+                let mut fs = world.resource_mut::<FactionStoreResource>();
+                fs.store.factions.insert(
+                    fid.to_string(),
+                    FactionState {
+                        resources: FactionResources::default(),
+                        personality: FactionPersonality {
+                            aggression: 0.5,
+                            expansion: 0.5,
+                            diplomacy: 0.5,
+                            caution: 0.5,
+                        },
+                        main_city: Some(c),
+                        diplomacy: Default::default(),
+                    },
+                );
+            }
+            // TerritoryManager: set main city + occupy
+            {
+                let mut tm = world.resource_mut::<TerritoryManagerResource>();
+                tm.manager.set_main_city(&fid.to_string(), c);
+                tm.manager.occupy(c, &fid.to_string());
+            }
+            // FactionIdMap
+            {
+                let mut fim = world.resource_mut::<FactionIdMap>();
+                fim.map.insert(fid.to_string(), (i + 1) as u8);
+            }
+        }
     }
 }
 

@@ -286,6 +286,36 @@ pub fn can_march_to(
 }
 
 // ---------------------------------------------------------------------------
+// AI 决策辅助：找邻接可占领空地
+// ---------------------------------------------------------------------------
+
+/// AI 找该势力的扩张目标：从主城邻接 6 格里找第一个可占领（can_occupy）的空地
+///
+/// # 决策策略（M0 简化版）
+/// - 遍历主城 6 邻接
+/// - 用 territory.can_occupy 判定（要求：空地 / 6 邻有己方 / 与主城连通）
+/// - 第一个满足的格作为目标
+///
+/// 返回 `Some(coord)` 表示有目标可派兵，`None` 表示满了/被卡。
+///
+/// # 后续可加
+/// - persona（魏更激进，吴更保守）
+/// - 资源约束（粮 < 100 不扩张）
+/// - 优先占领资源格
+pub fn ai_expansion_target(
+    faction_id: &slg_data::ids::FactionId,
+    faction_main_city: HexCoord,
+    territory: &mut crate::map::territory::TerritoryManager,
+    terrain_map: &std::collections::BTreeMap<TileKey, crate::map::tile::TerrainType>,
+) -> Option<HexCoord> {
+    faction_main_city
+        .neighbors()
+        .iter()
+        .find(|n| territory.can_occupy(**n, faction_id, terrain_map))
+        .copied()
+}
+
+// ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
 
@@ -469,5 +499,89 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(b, c);
         assert!(a < b && b < c);
+    }
+
+    // -----------------------------------------------------------------------
+    // AI 决策辅助：ai_expansion_target
+    // -----------------------------------------------------------------------
+
+    fn key(q: i32, r: i32) -> TileKey {
+        HexCoord::new(q, r).to_tile_key()
+    }
+
+    fn make_full_plains_terrain(w: i32, h: i32) -> std::collections::BTreeMap<TileKey, crate::map::tile::TerrainType> {
+        let mut m = std::collections::BTreeMap::new();
+        for q in 0..w {
+            for r in 0..h {
+                m.insert(key(q, r), crate::map::tile::TerrainType::Plains);
+            }
+        }
+        m
+    }
+
+    fn make_empty_territory(w: i32, h: i32) -> crate::map::territory::TerritoryManager {
+        let mut mgr = crate::map::territory::TerritoryManager::new((w * h) as usize);
+        for r in 0..h {
+            for q in 0..w {
+                mgr.register_tile(HexCoord::new(q, r));
+            }
+        }
+        mgr
+    }
+
+    #[test]
+    fn test_ai_expansion_target_finds_neighbor() {
+        let fid = "faction_2".to_string();
+        let main = HexCoord::new(10, 10);
+        let mut territory = make_empty_territory(128, 128);
+        territory.set_main_city(&fid, main);
+        territory.occupy(main, &fid);
+        let terrain = make_full_plains_terrain(128, 128);
+
+        // 邻接 1 步有 6 个空地，任意一个都行
+        let target = ai_expansion_target(&fid, main, &mut territory, &terrain);
+        assert!(target.is_some(), "玩家主城旁应该有可占领格");
+        let t = target.unwrap();
+        // target 必须是主城的 6 邻之一
+        let neighbors: Vec<HexCoord> = main.neighbors().to_vec();
+        assert!(neighbors.contains(&t), "target 必须是主城 6 邻接之一");
+    }
+
+    #[test]
+    fn test_ai_expansion_target_no_target_when_all_own() {
+        // AI 主城 + 6 邻全部 own 自己 → 无可扩张目标
+        // (M0 can_occupy 允许攻占敌方格, 所以用 "6 邻都是自己" 来测 None)
+        let fid = "faction_2".to_string();
+        let main = HexCoord::new(10, 10);
+        let mut territory = make_empty_territory(128, 128);
+        territory.set_main_city(&fid, main);
+        territory.occupy(main, &fid);
+        for n in main.neighbors() {
+            territory.occupy(n, &fid);
+        }
+
+        let terrain = make_full_plains_terrain(128, 128);
+        let target = ai_expansion_target(&fid, main, &mut territory, &terrain);
+        assert!(target.is_none(), "主城 + 6 邻都 own 时 AI 应无目标");
+    }
+
+    #[test]
+    fn test_ai_expansion_target_no_overwrite_own_territory() {
+        // AI target 不应覆盖已 own 的格（即使是 AI 自己的）
+        let fid = "faction_3".to_string();
+        let main = HexCoord::new(50, 50);
+        let mut territory = make_empty_territory(128, 128);
+        territory.set_main_city(&fid, main);
+        territory.occupy(main, &fid);
+        // 占一个邻接
+        let owned_neighbor = main.neighbors()[0];
+        territory.occupy(owned_neighbor, &fid);
+        let terrain = make_full_plains_terrain(128, 128);
+
+        let target = ai_expansion_target(&fid, main, &mut territory, &terrain);
+        assert!(target.is_some());
+        let t = target.unwrap();
+        // target 不应是已 own 的格
+        assert_ne!(t, owned_neighbor, "AI 不应攻占自己的格");
     }
 }
