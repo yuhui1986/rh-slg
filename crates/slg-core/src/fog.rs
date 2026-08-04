@@ -212,6 +212,28 @@ impl FogOfWar {
 }
 
 // ---------------------------------------------------------------------------
+// Chunk 数组填充 helper
+// ---------------------------------------------------------------------------
+
+/// 从 FogOfWar 读 chunk (cx, cy) 的 fog 状态到 `[u8; 1024]` 数组
+///
+/// 给 `slg-engine::ChunkData.fog` 用。layout 与 chunk_mesh 渲染一致：
+/// `fog_arr[ly * 32 + lx]` = chunk 内 (lx, ly) 位置的 fog 状态。
+///
+/// 这是 `start_new_game` 里的内联代码抽出来的纯函数版本，方便单测。
+pub fn fill_chunk_fog_arr(cx: u32, cy: u32, fog: &FogOfWar) -> [u8; 1024] {
+    let mut arr = [FOG_FOGGED; CHUNK_TILES];
+    for ly in 0..CHUNK_SIZE {
+        for lx in 0..CHUNK_SIZE {
+            let x = (cx * CHUNK_SIZE + lx) as i32;
+            let y = (cy * CHUNK_SIZE + ly) as i32;
+            arr[(ly * CHUNK_SIZE + lx) as usize] = fog.get(x, y);
+        }
+    }
+    arr
+}
+
+// ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
 
@@ -318,5 +340,151 @@ mod tests {
         let fog = FogOfWar::new();
         assert_eq!(fog.get(-1, 0), FOG_FOGGED);
         assert_eq!(fog.get(0, -1), FOG_FOGGED);
+    }
+
+    #[test]
+    fn test_fill_chunk_fog_arr_initially_all_fogged() {
+        // 没揭开过任何格子的 fog，chunk(0,0) 应该是全 fogged
+        let fog = FogOfWar::new();
+        let arr = fill_chunk_fog_arr(0, 0, &fog);
+        assert!(arr.iter().all(|&v| v == FOG_FOGGED));
+        assert_eq!(arr.len(), 1024);
+    }
+
+    #[test]
+    fn test_fill_chunk_fog_arr_after_reveal() {
+        // 揭开 (5, 3)，验证 chunk(0,0) 数组对应位置是 visible
+        // fill_chunk_fog_arr 的 layout: arr[ly * 32 + lx] = fog.get(lx, ly)
+        // 所以 (5, 3) 在 arr[3 * 32 + 5] = arr[101]
+        let mut fog = FogOfWar::new();
+        fog.chunks.insert((0, 0), FogChunk::new_fogged());
+        fog.reveal_one(HexCoord::new(5, 3));
+        let arr = fill_chunk_fog_arr(0, 0, &fog);
+        assert_eq!(arr[3 * 32 + 5], FOG_VISIBLE);
+        // 其他位置仍是 fogged
+        assert_eq!(arr[0], FOG_FOGGED);
+        assert_eq!(arr[100], FOG_FOGGED);
+    }
+
+    #[test]
+    fn test_fill_chunk_fog_arr_chunk_boundary() {
+        // chunk 边界：(32, 0) 在 chunk(1, 0) 而非 chunk(0, 0)
+        let mut fog = FogOfWar::new();
+        fog.chunks.insert((1, 0), FogChunk::new_fogged());
+        fog.reveal_one(HexCoord::new(32, 0));
+        let arr0 = fill_chunk_fog_arr(0, 0, &fog);
+        let arr1 = fill_chunk_fog_arr(1, 0, &fog);
+        assert_eq!(arr0[0], FOG_FOGGED);
+        assert_eq!(arr1[0], FOG_VISIBLE);
+    }
+
+    /// 端到端：模拟 start_new_game 的 fog 流程
+    ///
+    /// 跑流程：generate_map + load_map + 收集主城 + 选 player + init fog + 填 chunk.fog
+    /// 验证：玩家主城周围 chunk 的 fog_arr 至少有 7 格 visible
+    #[test]
+    fn test_e2e_start_new_game_fog_pipeline() {
+        use crate::gen::generate_map;
+        use crate::gen::GenerationPreset;
+        use crate::map::grid::HexCoord;
+        use crate::map::loader::load_map;
+
+        // 1. 模拟 sanguo_dl preset
+        let preset = GenerationPreset {
+            name: "三国鼎立".to_string(),
+            description: "E2E fog test".to_string(),
+            width: 128,
+            height: 128,
+            seed: 42,
+            terrain_style: 0.5,
+            richness: 0.6,
+            num_factions: 6,
+            tags: vec!["三国".to_string()],
+        };
+
+        // 2. generate_map + load_map
+        let doc = generate_map(42, &preset);
+        let load_result = load_map(&doc);
+
+        // 3. 收集主城（从 entity_placements spawn）
+        let mut cities: Vec<(HexCoord, String)> = Vec::new();
+        for (key, p) in &load_result.entity_placements {
+            if p.entity_type == "spawn" {
+                if let Some(fid) = &p.faction_id {
+                    cities.push((HexCoord::from_tile_key(*key), fid.clone()));
+                }
+            }
+        }
+        assert_eq!(cities.len(), 6, "expected 6 spawns, got {}", cities.len());
+
+        // 4. player_faction = BTreeMap 第一个 key（与 start_new_game 一致）
+        let player_faction_id = load_result
+            .factions
+            .keys()
+            .next()
+            .expect("at least one faction")
+            .clone();
+        eprintln!("E2E: player = {}", player_faction_id);
+
+        // 5. init fog
+        let fog = FogOfWar::init_with_cities(128, 128, &cities, &player_faction_id);
+        assert_eq!(fog.chunks.len(), 16, "128x128 地图应有 4x4=16 个 chunk");
+
+        // 6. 找玩家主城 hex
+        let player_city = cities
+            .iter()
+            .find(|(_, fid)| fid == &player_faction_id)
+            .expect("player city should exist")
+            .0;
+        eprintln!("E2E: player city hex=({}, {})", player_city.q, player_city.r);
+
+        // 7. 验证玩家主城 + 6 邻域都揭开
+        let mut visible_count = 0;
+        let coords_to_check: Vec<HexCoord> = std::iter::once(player_city)
+            .chain(player_city.ring(1))
+            .collect();
+        for c in &coords_to_check {
+            if fog.get(c.q, c.r) == FOG_VISIBLE {
+                visible_count += 1;
+            }
+        }
+        assert_eq!(
+            visible_count, 7,
+            "玩家主城 + 6 邻域应全部揭开，但只揭了 {} 格",
+            visible_count
+        );
+
+        // 8. 验证玩家主城所在 chunk 的 fog_arr 至少 1 格 visible
+        let cx = (player_city.q as u32) / CHUNK_SIZE;
+        let cy = (player_city.r as u32) / CHUNK_SIZE;
+        let arr = fill_chunk_fog_arr(cx, cy, &fog);
+        let chunk_visible: u32 = arr.iter().filter(|&&v| v == FOG_VISIBLE).count() as u32;
+        eprintln!(
+            "E2E: chunk({},{}) fog_arr visible count = {}",
+            cx, cy, chunk_visible
+        );
+        assert!(
+            chunk_visible >= 1,
+            "玩家主城所在 chunk({},{}) fog_arr 应至少有 1 格 visible, got {}",
+            cx,
+            cy,
+            chunk_visible
+        );
+
+        // 9. 验证 AI 主城（不是玩家的）仍然 fogged
+        let ai_city = cities
+            .iter()
+            .find(|(_, fid)| fid != &player_faction_id)
+            .expect("at least one AI")
+            .0;
+        assert_eq!(
+            fog.get(ai_city.q, ai_city.r),
+            FOG_FOGGED,
+            "AI 主城不应被自动揭开 (hex=({}, {}))",
+            ai_city.q,
+            ai_city.r
+        );
+
+        eprintln!("E2E: ✅ fog pipeline 正确：玩家主城周围 7 格可见, AI 主城仍然 fogged");
     }
 }

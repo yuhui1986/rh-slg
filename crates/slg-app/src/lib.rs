@@ -1145,7 +1145,7 @@ fn render_map_debug(
                     }
                 }
             }
-            let pct = if total > 0 { visible * 100 / total } else { 0 };
+            let pct = if total > 0 { visible / (total / 100).max(1) } else { 0 };
             ui.label(format!("可见: {}/{} ({}%)", visible, total, pct));
 
             ui.separator();
