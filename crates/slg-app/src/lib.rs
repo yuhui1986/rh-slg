@@ -12,7 +12,9 @@ use slg_core::gen::{generate_map, GenerationPreset};
 use slg_core::map::grid::HexCoord;
 use slg_core::map::loader::*;
 use slg_core::map::territory::TerritoryManager;
+use slg_core::map::tile::TerrainType;
 use slg_core::resource::*;
+use slg_data::ids::{FactionId, TileKey};
 use slg_engine::camera::{HexClickEvent, HexRightClickEvent};
 use slg_engine::render::{
     build_chunk_mesh_with_transitions, chunk_world_offset, ChunkData as EngineChunkData,
@@ -21,6 +23,35 @@ use slg_engine::systems::GameClockResource;
 use slg_ui::panels::game_over::{GameOverAction, GameOverState};
 use slg_ui::panels::main_menu::{MainMenuAction, MainMenuState};
 use slg_ui::panels::new_game::{Difficulty, GameSetupConfig, NewGameAction, NewGameState};
+
+// ---------------------------------------------------------------------------
+// 渲染/交互用 Resource（slg-core 不依赖 Bevy，所以这些在 slg-app 里定义）
+// ---------------------------------------------------------------------------
+
+/// FactionId → 势力色索引（0..=6）的映射
+///
+/// u8 索引用于 ChunkData.owners 数组的填充，对应 `atlas::faction_color` 的颜色：
+/// - 0 = 无主
+/// - 1..5 = 5 个 AI 势力（魏蜀吴辽东南中）
+/// - 6 = 玩家（黄金）
+///
+/// 由 start_new_game 在加载地图时构建。
+#[derive(Debug, Clone, Default, Resource)]
+pub struct FactionIdMap {
+    pub map: BTreeMap<FactionId, u8>,
+}
+
+impl FactionIdMap {
+    pub fn get(&self, fid: &FactionId) -> u8 {
+        self.map.get(fid).copied().unwrap_or(0)
+    }
+}
+
+/// 全局地形图（TileKey → TerrainType），供 can_occupy 等逻辑查询
+#[derive(Debug, Clone, Default, Resource)]
+pub struct TerrainMapResource {
+    pub map: BTreeMap<TileKey, TerrainType>,
+}
 
 // ---------------------------------------------------------------------------
 // Steam 初始化
@@ -68,6 +99,8 @@ impl Plugin for SlgAppPlugin {
             .init_resource::<FactionStoreResource>()
             .init_resource::<FogOfWarResource>()
             .init_resource::<TerritoryManagerResource>()
+            .init_resource::<FactionIdMap>()
+            .init_resource::<TerrainMapResource>()
             // 启动系统：生成地图、初始化势力
             .add_systems(Startup, setup_game)
             // 主菜单动作处理 + 地图点击
@@ -124,6 +157,13 @@ fn update_click_rings(
         let alpha = ring.lifetime.clamp(0.0, 1.0);
         sprite.color = Color::srgba(1.0, 1.0, 1.0, alpha);
     }
+}
+
+/// 主城 marker 组件：spawn 在每个势力主城的特殊 sprite（颜色 = 势力色）
+#[derive(Component)]
+struct MainCityMarker {
+    #[allow(dead_code)] // 未来用于 hover/click → 弹出城池信息面板
+    pub faction_id: FactionId,
 }
 
 /// 在点击位置 spawn 一个白色圆环
@@ -263,6 +303,8 @@ fn start_new_game(
     clock_res: &mut GameClockResource,
     faction_res: &mut FactionStoreResource,
     territory_res: &mut TerritoryManagerResource,
+    faction_id_map: &mut FactionIdMap,
+    terrain_map: &mut TerrainMapResource,
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
@@ -350,6 +392,26 @@ fn start_new_game(
         }
     }
 
+    // 构建 FactionIdMap：玩家=6（黄金），AI 按 iteration 顺序分配 1..5
+    // 这个映射决定 ChunkData.owners[i] 里写什么 u8，对应 atlas::faction_color 的颜色
+    faction_id_map.map.clear();
+    let mut ai_idx = 1u8;
+    for fid in faction_res.store.factions.keys() {
+        let color_idx = if fid == &player_faction_id {
+            6 // 玩家
+        } else {
+            let v = ai_idx;
+            ai_idx += 1;
+            v
+        };
+        faction_id_map.map.insert(fid.clone(), color_idx);
+    }
+    info!(
+        "FactionIdMap: player={}→6, AI 共 {} 个",
+        player_faction_id,
+        ai_idx - 1
+    );
+
     // 初始化领地
     for (key, entity) in &load_result.entity_placements {
         if let Some(ref faction_id) = entity.faction_id {
@@ -388,18 +450,52 @@ fn start_new_game(
 
     // 生成并渲染 Chunk 实体
     let chunk_count = load_result.chunk_data.len();
+
+    // 先把 terrain 全部灌进 TerrainMap（供 can_occupy 查询）
+    terrain_map.map.clear();
     for core_chunk in &load_result.chunk_data {
+        let cx = core_chunk.chunk_x;
+        let cy = core_chunk.chunk_y;
+        for ly in 0..32u32 {
+            for lx in 0..32u32 {
+                let x = cx * 32 + lx;
+                let y = cy * 32 + ly;
+                let key = ((y as u64) << 32) | (x as u64);
+                if let Some(t) = TerrainType::from_u8(core_chunk.terrains[(ly * 32 + lx) as usize]) {
+                    terrain_map.map.insert(key, t);
+                }
+            }
+        }
+    }
+
+    for core_chunk in &load_result.chunk_data {
+        // 关键修复：把 load_result.tile_owners 灌进每个 chunk 的 owners 数组
+        // 之前 owners_chunk 永远是 [0; 1024]，导致地图上完全没势力色
+        let mut owners = core_chunk.owners;
+        let cx = core_chunk.chunk_x;
+        let cy = core_chunk.chunk_y;
+        for ly in 0..32u32 {
+            for lx in 0..32u32 {
+                let x = cx * 32 + lx;
+                let y = cy * 32 + ly;
+                let key = ((y as u64) << 32) | (x as u64);
+                if let Some(fid) = load_result.tile_owners.get(&key) {
+                    owners[(ly * 32 + lx) as usize] = faction_id_map.get(fid);
+                }
+            }
+        }
+
         let engine_chunk = EngineChunkData {
             chunk_x: core_chunk.chunk_x as i32,
             chunk_y: core_chunk.chunk_y as i32,
             terrains: core_chunk.terrains,
-            owners: core_chunk.owners,
+            owners, // 已填充归属
             levels: core_chunk.levels,
             dirty: true,
             current_lod: 0,
         };
 
-        let mesh = build_chunk_mesh_with_transitions(&core_chunk.terrains, &core_chunk.owners);
+        let mesh = build_chunk_mesh_with_transitions(&core_chunk.terrains, &owners);
         let mesh_handle = meshes.add(mesh);
         let material_handle = materials.add(ColorMaterial::default());
 
@@ -427,6 +523,30 @@ fn start_new_game(
     let map_center_y = map_total_h * 0.5;
     if let Ok(mut transform) = camera_query.get_single_mut() {
         transform.translation = Vec3::new(map_center_x, map_center_y, 0.0);
+    }
+
+    // 生成主城 marker：每个势力的主城位置画一个特殊 sprite
+    // 用 faction_color(0) 的色调（玩家金色，AI 各色）做边框色，方便玩家一眼看到自己基地
+    for fid in faction_res.store.factions.keys() {
+        if let Some(faction) = faction_res.store.factions.get(fid) {
+            if let Some(main_coord) = faction.main_city {
+                let color_idx = faction_id_map.get(fid);
+                let faction_col = slg_engine::render::atlas::faction_color(color_idx);
+                let center = slg_engine::camera::hex_world_position(main_coord);
+                commands.spawn((
+                    Sprite {
+                        color: faction_col,
+                        custom_size: Some(Vec2::new(
+                            slg_engine::render::chunk_mesh::HEX_SIZE * 1.6,
+                            slg_engine::render::chunk_mesh::HEX_SIZE * 1.6,
+                        )),
+                        ..default()
+                    },
+                    Transform::from_translation(Vec3::new(center.x, center.y, 1.5)),
+                    MainCityMarker { faction_id: fid.clone() },
+                ));
+            }
+        }
     }
     // 自适应缩放：根据窗口实际尺寸让地图填满视口（margin=1.0 → 整张地图贴边显示）。
     // 旧代码硬编码 scale=1.0 + 80% margin：720p 下视口=1280×720 世界单位，
@@ -510,6 +630,8 @@ fn handle_new_game_actions(
     mut clock_res: ResMut<GameClockResource>,
     mut faction_res: ResMut<FactionStoreResource>,
     mut territory_res: ResMut<TerritoryManagerResource>,
+    mut faction_id_map: ResMut<FactionIdMap>,
+    mut terrain_map: ResMut<TerrainMapResource>,
     mut menu_state: ResMut<MainMenuState>,
     mut new_game_state: ResMut<NewGameState>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -529,6 +651,8 @@ fn handle_new_game_actions(
                     &mut *clock_res,
                     &mut *faction_res,
                     &mut *territory_res,
+                    &mut *faction_id_map,
+                    &mut *terrain_map,
                     &mut commands,
                     &mut meshes,
                     &mut materials,
@@ -820,8 +944,10 @@ fn handle_hex_click(
     mut commands: Commands,
     mut click_events: EventReader<HexClickEvent>,
     game_state: Res<GameState>,
-    territory_res: Res<TerritoryManagerResource>,
-    _faction_res: Res<FactionStoreResource>,
+    mut territory_res: ResMut<TerritoryManagerResource>,
+    faction_id_map: Res<FactionIdMap>,
+    terrain_map: Res<TerrainMapResource>,
+    mut chunk_query: Query<&mut EngineChunkData>,
 ) {
     for event in click_events.read() {
         let coord = event.coord;
@@ -841,14 +967,39 @@ fn handle_hex_click(
 
         match game_state.phase {
             GamePhase::Playing => {
-                // 查询地块归属
-                let tile_key = coord.to_tile_key();
-                let owner = territory_res.manager.owner_map.get(&tile_key);
-                info!(
-                    "[Playing] 点击地块 ({}, {}), 归属={:?}, 玩家势力={}",
-                    coord.q, coord.r, owner, game_state.player_faction_id
-                );
-                // TODO: 打开地块详情面板 / 选中地块 / 显示指令选项
+                // **核心 SLG 循环：左键 → 占地**
+                let player_fid = game_state.player_faction_id.clone();
+                let can = territory_res
+                    .manager
+                    .can_occupy(coord, &player_fid, &terrain_map.map);
+                if can {
+                    territory_res.manager.occupy(coord, &player_fid);
+                    // 同步更新对应 chunk 的 owners 数组并标 dirty
+                    let cx = coord.q / 32;
+                    let cy = coord.r / 32;
+                    let lx = (coord.q % 32) as usize;
+                    let ly = (coord.r % 32) as usize;
+                    let local_idx = ly * 32 + lx;
+                    let color_idx = faction_id_map.get(&player_fid);
+                    for mut chunk in chunk_query.iter_mut() {
+                        if chunk.chunk_x == cx && chunk.chunk_y == cy {
+                            chunk.owners[local_idx] = color_idx;
+                            chunk.dirty = true;
+                            break;
+                        }
+                    }
+                    info!(
+                        "[Playing] ✅ 占地成功: ({}, {}) → 玩家 ({}) color_idx={}",
+                        coord.q, coord.r, player_fid, color_idx
+                    );
+                } else {
+                    // 不能占地（不是邻接 / 已是自己 / 是水域）
+                    let owner = territory_res.manager.owner_map.get(&coord.to_tile_key());
+                    info!(
+                        "[Playing] ❌ 不能占地: ({}, {}), 当前归属={:?}",
+                        coord.q, coord.r, owner
+                    );
+                }
             }
             GamePhase::Editor => {
                 info!("[Editor] 点击地块 ({}, {})", coord.q, coord.r);

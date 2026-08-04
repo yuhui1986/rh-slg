@@ -465,10 +465,15 @@ fn mouse_button_diagnostic(
 /// 与 chunk_mesh::hex_center() 数学等价，但直接接受 axial 坐标（i32），
 /// 无需转换为 offset 坐标（u32），支持负坐标。
 ///
+/// axial 坐标 → 世界坐标（pointy-top）
+///
+/// 与 chunk_mesh::hex_center() 数学等价，但直接接受 axial 坐标（i32），
+/// 无需转换为 offset 坐标（u32），支持负坐标。
+///
 /// 公式：
 ///   x = sqrt(3) * q + sqrt(3)/2 * r
 ///   y = 1.5 * r
-fn hex_world_position(coord: HexCoord) -> Vec2 {
+pub fn hex_world_position(coord: HexCoord) -> Vec2 {
     let q = coord.q as f32;
     let r = coord.r as f32;
     Vec2::new(3.0_f32.sqrt() * q + 3.0_f32.sqrt() / 2.0 * r, 1.5 * r)
