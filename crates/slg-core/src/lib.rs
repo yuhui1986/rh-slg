@@ -7,6 +7,7 @@ pub mod ai;
 pub mod clock;
 pub mod entity;
 pub mod event;
+pub mod fog;
 pub mod gen;
 pub mod map;
 pub mod military;

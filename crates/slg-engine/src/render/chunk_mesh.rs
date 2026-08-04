@@ -41,13 +41,20 @@ const MAX_REBUILDS_PER_FRAME: usize = 16;
 /// - 1 (Merged4)：2x2 合并
 /// - 2 (Merged16)：4x4 合并
 /// - 3 (Minimap)：整个 Chunk 单个色块
-pub fn generate_chunk_mesh(terrains: &[u8; 1024], owners: &[u8; 1024], lod_level: u8) -> Mesh {
+///
+/// `fog`: 0 = 黑雾（颜色调暗到 30% 亮度）, 1 = 揭开（正常）
+pub fn generate_chunk_mesh(
+    terrains: &[u8; 1024],
+    owners: &[u8; 1024],
+    fog: &[u8; 1024],
+    lod_level: u8,
+) -> Mesh {
     match lod_level {
-        0 => generate_full_mesh(terrains, owners),
-        1 => generate_merged_mesh(terrains, owners, 2),
-        2 => generate_merged_mesh(terrains, owners, 4),
-        3 => generate_minimap_mesh(terrains, owners),
-        _ => generate_full_mesh(terrains, owners),
+        0 => generate_full_mesh(terrains, owners, fog),
+        1 => generate_merged_mesh(terrains, owners, fog, 2),
+        2 => generate_merged_mesh(terrains, owners, fog, 4),
+        3 => generate_minimap_mesh(terrains, owners, fog),
+        _ => generate_full_mesh(terrains, owners, fog),
     }
 }
 
@@ -55,8 +62,12 @@ pub fn generate_chunk_mesh(terrains: &[u8; 1024], owners: &[u8; 1024], lod_level
 ///
 /// 在原有 mesh 基础上，为相邻不同地形之间的边缘添加过渡三角形，
 /// 使用颜色渐变实现平滑过渡，避免硬切割。
-pub fn generate_chunk_mesh_with_transitions(terrains: &[u8; 1024], owners: &[u8; 1024]) -> Mesh {
-    let base_mesh = generate_full_mesh(terrains, owners);
+pub fn generate_chunk_mesh_with_transitions(
+    terrains: &[u8; 1024],
+    owners: &[u8; 1024],
+    fog: &[u8; 1024],
+) -> Mesh {
+    let base_mesh = generate_full_mesh(terrains, owners, fog);
     let transition_overlay = transition::generate_transition_mesh(terrains);
     merge_meshes(base_mesh, transition_overlay)
 }
@@ -144,9 +155,14 @@ pub fn rebuild_dirty_chunks(
 
         // Full LOD 时启用地形过渡渲染，更高 LOD 级别跳过过渡以节省性能
         let new_mesh = if chunk.current_lod == 0 {
-            generate_chunk_mesh_with_transitions(&chunk.terrains, &chunk.owners)
+            generate_chunk_mesh_with_transitions(&chunk.terrains, &chunk.owners, &chunk.fog)
         } else {
-            generate_chunk_mesh(&chunk.terrains, &chunk.owners, chunk.current_lod)
+            generate_chunk_mesh(
+                &chunk.terrains,
+                &chunk.owners,
+                &chunk.fog,
+                chunk.current_lod,
+            )
         };
         let new_handle = meshes.add(new_mesh);
 
@@ -162,7 +178,7 @@ pub fn rebuild_dirty_chunks(
 // Full LOD：每个 hex 一个六边形
 // ---------------------------------------------------------------------------
 
-fn generate_full_mesh(terrains: &[u8; 1024], owners: &[u8; 1024]) -> Mesh {
+fn generate_full_mesh(terrains: &[u8; 1024], owners: &[u8; 1024], fog: &[u8; 1024]) -> Mesh {
     // 预分配：1024 hex * 7 vertices = 7168 vertices, 1024 * 18 indices = 18432
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(7168);
     let mut normals: Vec<[f32; 3]> = Vec::with_capacity(7168);
@@ -175,11 +191,19 @@ fn generate_full_mesh(terrains: &[u8; 1024], owners: &[u8; 1024]) -> Mesh {
             let idx = (row * 32 + col) as usize;
             let terrain_id = terrains[idx];
             let owner_id = owners[idx];
+            let is_fogged = fog[idx] == 0;
 
             let center = hex_center(row, col);
             let terrain_col = atlas::terrain_color_from_u8(terrain_id);
             let faction_col = atlas::faction_color(owner_id);
             let final_color = blend_colors(terrain_col, faction_col);
+            // 黑雾：颜色 × 0.3 + 黑 0.0 (alpha 保持 1.0)
+            let final_color = if is_fogged {
+                let s = final_color.to_srgba();
+                Color::srgb(s.red * 0.3, s.green * 0.3, s.blue * 0.3)
+            } else {
+                final_color
+            };
             let color_arr = color_to_f32_4(final_color);
 
             let vert_start = positions.len() as u32;
@@ -217,7 +241,12 @@ fn generate_full_mesh(terrains: &[u8; 1024], owners: &[u8; 1024]) -> Mesh {
 // Merged LOD：合并 N*N hex 为一个大六边形
 // ---------------------------------------------------------------------------
 
-fn generate_merged_mesh(terrains: &[u8; 1024], _owners: &[u8; 1024], merge_size: u32) -> Mesh {
+fn generate_merged_mesh(
+    terrains: &[u8; 1024],
+    _owners: &[u8; 1024],
+    fog: &[u8; 1024],
+    merge_size: u32,
+) -> Mesh {
     let chunks_per_row = 32 / merge_size;
     let total = (chunks_per_row * chunks_per_row) as usize;
 
@@ -233,6 +262,7 @@ fn generate_merged_mesh(terrains: &[u8; 1024], _owners: &[u8; 1024], merge_size:
             let mut r_sum = 0.0f32;
             let mut g_sum = 0.0f32;
             let mut b_sum = 0.0f32;
+            let mut fogged_count = 0u32;
             let mut count = 0u32;
 
             for dr in 0..merge_size {
@@ -245,16 +275,28 @@ fn generate_merged_mesh(terrains: &[u8; 1024], _owners: &[u8; 1024], merge_size:
                     r_sum += s.red;
                     g_sum += s.green;
                     b_sum += s.blue;
+                    if fog[idx] == 0 {
+                        fogged_count += 1;
+                    }
                     count += 1;
                 }
             }
+
+            // 任一格 fogged → 整个合并块视为 fogged（保守：揭示的范围不会跨 chunk）
+            let is_fogged = fogged_count > 0;
 
             let avg_color = Color::srgb(
                 r_sum / count as f32,
                 g_sum / count as f32,
                 b_sum / count as f32,
             );
-            let color_arr = color_to_f32_4(avg_color);
+            let final_color = if is_fogged {
+                let s = avg_color.to_srgba();
+                Color::srgb(s.red * 0.3, s.green * 0.3, s.blue * 0.3)
+            } else {
+                avg_color
+            };
+            let color_arr = color_to_f32_4(final_color);
 
             // 合并块中心坐标（取块内中间 hex 的位置）
             let center_row = mr * merge_size + merge_size / 2;
@@ -297,8 +339,8 @@ fn generate_merged_mesh(terrains: &[u8; 1024], _owners: &[u8; 1024], merge_size:
 // Minimap LOD：整个 Chunk 一个色块
 // ---------------------------------------------------------------------------
 
-fn generate_minimap_mesh(terrains: &[u8; 1024], owners: &[u8; 1024]) -> Mesh {
-    generate_merged_mesh(terrains, owners, 32)
+fn generate_minimap_mesh(terrains: &[u8; 1024], owners: &[u8; 1024], fog: &[u8; 1024]) -> Mesh {
+    generate_merged_mesh(terrains, owners, fog, 32)
 }
 
 // ---------------------------------------------------------------------------

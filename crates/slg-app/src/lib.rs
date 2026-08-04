@@ -289,13 +289,13 @@ impl Default for TerritoryManagerResource {
 /// 迷雾 Bevy Resource 包装
 #[derive(Resource)]
 pub struct FogOfWarResource {
-    pub fog: FogOfWar,
+    pub fog: slg_core::fog::FogOfWar,
 }
 
 impl Default for FogOfWarResource {
     fn default() -> Self {
         Self {
-            fog: FogOfWar { chunks: vec![] },
+            fog: slg_core::fog::FogOfWar::new(),
         }
     }
 }
@@ -328,6 +328,7 @@ fn start_new_game(
     territory_res: &mut TerritoryManagerResource,
     faction_id_map: &mut FactionIdMap,
     terrain_map: &mut TerrainMapResource,
+    fog_res: &mut FogOfWarResource,
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
@@ -459,6 +460,21 @@ fn start_new_game(
         }
     }
 
+    // 初始化迷雾：全黑，玩家主城 + 6 邻域揭开
+    let cities: Vec<(HexCoord, FactionId)> = territory_res
+        .manager
+        .main_cities
+        .iter()
+        .map(|(fid, c)| (*c, fid.clone()))
+        .collect();
+    fog_res.fog = slg_core::fog::FogOfWar::init_with_cities(
+        preset.width,
+        preset.height,
+        &cities,
+        &player_faction_id,
+    );
+    info!("迷雾初始化: chunks={}, 玩家主城周围已揭开", fog_res.fog.chunks.len());
+
     // 更新游戏状态
     game_state.player_faction_id = player_faction_id.clone();
     game_state.difficulty = config.difficulty;
@@ -508,17 +524,28 @@ fn start_new_game(
             }
         }
 
+        // 把 fog 灌进 chunk.fog 数组
+        let mut fog_arr = [slg_core::fog::FOG_FOGGED; 1024];
+        for ly in 0..32u32 {
+            for lx in 0..32u32 {
+                let x = (cx * 32 + lx) as i32;
+                let y = (cy * 32 + ly) as i32;
+                fog_arr[(ly * 32 + lx) as usize] = fog_res.fog.get(x, y);
+            }
+        }
+
         let engine_chunk = EngineChunkData {
             chunk_x: core_chunk.chunk_x as i32,
             chunk_y: core_chunk.chunk_y as i32,
             terrains: core_chunk.terrains,
             owners, // 已填充归属
             levels: core_chunk.levels,
+            fog: fog_arr, // 已填充迷雾
             dirty: true,
             current_lod: 0,
         };
 
-        let mesh = build_chunk_mesh_with_transitions(&core_chunk.terrains, &owners);
+        let mesh = build_chunk_mesh_with_transitions(&core_chunk.terrains, &owners, &fog_arr);
         let mesh_handle = meshes.add(mesh);
         let material_handle = materials.add(ColorMaterial::default());
 
@@ -666,8 +693,7 @@ fn handle_new_game_actions(
     mut territory_res: ResMut<TerritoryManagerResource>,
     mut faction_id_map: ResMut<FactionIdMap>,
     mut terrain_map: ResMut<TerrainMapResource>,
-    mut menu_state: ResMut<MainMenuState>,
-    mut new_game_state: ResMut<NewGameState>,
+    mut fog_res: ResMut<FogOfWarResource>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     existing_chunks: Query<Entity, With<EngineChunkData>>,
@@ -678,7 +704,6 @@ fn handle_new_game_actions(
     for action in action_events.read() {
         match action {
             NewGameAction::StartGame(config) => {
-                new_game_state.show = false;
                 start_new_game(
                     config,
                     &mut *game_state,
@@ -687,6 +712,7 @@ fn handle_new_game_actions(
                     &mut *territory_res,
                     &mut *faction_id_map,
                     &mut *terrain_map,
+                    &mut *fog_res,
                     &mut commands,
                     &mut meshes,
                     &mut materials,
@@ -698,8 +724,6 @@ fn handle_new_game_actions(
             }
             NewGameAction::BackToMenu => {
                 game_state.phase = GamePhase::Menu;
-                new_game_state.show = false;
-                menu_state.show = true;
                 info!("返回主菜单");
             }
         }
@@ -754,6 +778,7 @@ fn process_tick_phases(
     mut command_res: ResMut<slg_engine::systems::CommandQueueResource>,
     mut territory_res: ResMut<TerritoryManagerResource>,
     mut march_res: ResMut<MarchManagerResource>,
+    mut fog_res: ResMut<FogOfWarResource>,
     faction_id_map: Res<FactionIdMap>,
     terrain_map: Res<TerrainMapResource>,
     mut game_state: ResMut<GameState>,
@@ -818,8 +843,16 @@ fn process_tick_phases(
                                     break;
                                 }
                             }
+                            // 揭开到达格 + 6 邻域（永久：探索到 = 看到邻接）
+                            let mut to_reveal = vec![arrival.to];
+                            to_reveal.extend(arrival.to.ring(1));
+                            reveal_coords_and_sync_chunks(
+                                &mut fog_res,
+                                &mut chunk_query,
+                                &to_reveal,
+                            );
                             info!(
-                                "[MarchAdvance] ✅ 到达占地: ({}, {}) → {}",
+                                "[MarchAdvance] ✅ 到达占地: ({}, {}) → {}, 揭开邻域",
                                 arrival.to.q, arrival.to.r, arrival.faction_id
                             );
                         } else {
@@ -898,6 +931,45 @@ fn update_ui_state(
     top_bar.tick = game_state.tick;
     top_bar.speed = format!("{:?}", clock_res.clock.speed);
     top_bar.marching_count = march_res.manager.active().count() as u32;
+}
+
+/// 揭开若干 hex 并同步到对应 chunk 的 fog 数组 + 标 dirty
+///
+/// 流程：
+/// 1. fog manager 揭开（持久数据）
+/// 2. 每个 coord 找到对应 chunk，更新 `chunk.fog[idx] = 1`，设 dirty
+///
+/// 用于：
+/// - 派兵时揭开路径（handle_hex_click）
+/// - 到达时揭开邻域（process_tick_phases）
+/// - 玩家主城初始化（start_new_game 直接填 chunk.fog，不走这里）
+#[allow(clippy::too_many_arguments)]
+fn reveal_coords_and_sync_chunks(
+    fog_res: &mut FogOfWarResource,
+    chunk_query: &mut Query<&mut EngineChunkData>,
+    coords: &[HexCoord],
+) {
+    use slg_core::fog::{FOG_VISIBLE, CHUNK_SIZE};
+    for coord in coords {
+        fog_res.fog.reveal_one(*coord);
+        if coord.q < 0 || coord.r < 0 {
+            continue;
+        }
+        let q = coord.q as u32;
+        let r = coord.r as u32;
+        let cx = q / CHUNK_SIZE;
+        let cy = r / CHUNK_SIZE;
+        let lx = (q % CHUNK_SIZE) as usize;
+        let ly = (r % CHUNK_SIZE) as usize;
+        let local_idx = ly * CHUNK_SIZE as usize + lx;
+        for mut chunk in chunk_query.iter_mut() {
+            if chunk.chunk_x == cx as i32 && chunk.chunk_y == cy as i32 {
+                chunk.fog[local_idx] = FOG_VISIBLE;
+                chunk.dirty = true;
+                break;
+            }
+        }
+    }
 }
 
 /// 更新行军 sprite 位置（每帧插值）
@@ -1090,14 +1162,17 @@ fn render_map_debug(
 ///
 /// **注意**：spawn_click_ring **在越界检查之前**就执行，保证玩家在地图外点击
 /// 也能看到圆环反馈，方便他们理解坐标系。
+#[allow(clippy::too_many_arguments)]
 fn handle_hex_click(
     mut commands: Commands,
     mut click_events: EventReader<HexClickEvent>,
     game_state: Res<GameState>,
     mut territory_res: ResMut<TerritoryManagerResource>,
     mut march_res: ResMut<MarchManagerResource>,
+    mut fog_res: ResMut<FogOfWarResource>,
     terrain_map: Res<TerrainMapResource>,
     clock_res: Res<slg_engine::systems::GameClockResource>,
+    mut chunk_query: Query<&mut EngineChunkData>,
 ) {
     for event in click_events.read() {
         let coord = event.coord;
@@ -1178,9 +1253,12 @@ fn handle_hex_click(
                     MarchVisual { march_id: order.id },
                 )).id();
 
+                // 揭开行军路径上的所有 hex（探索 = 派兵 = 揭迷雾）
+                reveal_coords_and_sync_chunks(&mut fog_res, &mut chunk_query, &order.path);
+
                 info!(
-                    "[Playing] 🪖 派兵: id={} from=({},{}) to=({},{}) arrive_tick={}",
-                    order.id, from.q, from.r, coord.q, coord.r, order.arrive_tick
+                    "[Playing] 🪖 派兵: id={} from=({},{}) to=({},{}) arrive_tick={}, 揭开 {} 格",
+                    order.id, from.q, from.r, coord.q, coord.r, order.arrive_tick, order.path.len()
                 );
 
                 // 暂时 unused warning 防止：visual_entity 留作后续

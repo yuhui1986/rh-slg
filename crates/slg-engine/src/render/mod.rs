@@ -14,7 +14,7 @@ use crate::render::chunk_mesh::generate_chunk_mesh;
 
 /// Chunk 数据组件
 ///
-/// 每个 Chunk 覆盖 32x32 格，存储地形、势力、等级信息。
+/// 每个 Chunk 覆盖 32x32 格，存储地形、势力、等级、迷雾信息。
 /// 当数据变化时设置 `dirty = true`，由 `rebuild_dirty_chunks` 系统重建 mesh。
 #[derive(Component)]
 pub struct ChunkData {
@@ -28,6 +28,9 @@ pub struct ChunkData {
     pub owners: [u8; 1024],
     /// 32x32 = 1024 格土地等级（1~9）
     pub levels: [u8; 1024],
+    /// 32x32 = 1024 格迷雾状态（0 = 黑雾, 1 = 揭开）
+    /// 0 时 mesh 颜色调暗，玩家看不到地形细节
+    pub fog: [u8; 1024],
     /// 是否需要重建 mesh
     pub dirty: bool,
     /// 当前 LOD 级别（0=Full, 1=Merged4, 2=Merged16, 3=Minimap）
@@ -42,6 +45,7 @@ impl Default for ChunkData {
             terrains: [0; 1024],
             owners: [0; 1024],
             levels: [1; 1024],
+            fog: [1; 1024], // 默认全揭开（无雾）
             dirty: true,
             current_lod: 0,
         }
@@ -79,14 +83,25 @@ pub fn chunk_world_offset(chunk_x: i32, chunk_y: i32) -> Vec2 {
 /// 生成 Chunk mesh 并返回 Handle
 ///
 /// 供地图加载系统调用，创建新的 Chunk Entity。
-pub fn build_chunk_mesh(terrains: &[u8; 1024], owners: &[u8; 1024], lod_level: u8) -> Mesh {
-    generate_chunk_mesh(terrains, owners, lod_level)
+///
+/// `fog`: 0 = 黑雾（颜色调暗到 30% 亮度）, 1 = 揭开
+pub fn build_chunk_mesh(
+    terrains: &[u8; 1024],
+    owners: &[u8; 1024],
+    fog: &[u8; 1024],
+    lod_level: u8,
+) -> Mesh {
+    generate_chunk_mesh(terrains, owners, fog, lod_level)
 }
 
 /// 生成带地形过渡效果的 Chunk mesh（Full LOD）
 ///
 /// 供近距离观察时使用，在基础地形 mesh 之上叠加过渡几何体，
 /// 让相邻不同地形之间有平滑的颜色渐变。
-pub fn build_chunk_mesh_with_transitions(terrains: &[u8; 1024], owners: &[u8; 1024]) -> Mesh {
-    chunk_mesh::generate_chunk_mesh_with_transitions(terrains, owners)
+pub fn build_chunk_mesh_with_transitions(
+    terrains: &[u8; 1024],
+    owners: &[u8; 1024],
+    fog: &[u8; 1024],
+) -> Mesh {
+    chunk_mesh::generate_chunk_mesh_with_transitions(terrains, owners, fog)
 }
