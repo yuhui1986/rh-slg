@@ -43,18 +43,20 @@ const MAX_REBUILDS_PER_FRAME: usize = 16;
 /// - 3 (Minimap)：整个 Chunk 单个色块
 ///
 /// `fog`: 0 = 黑雾（颜色调暗到 30% 亮度）, 1 = 揭开（正常）
+/// `selected`: 0 = 未选中, 1 = 选中（叠加金色 (1.0, 0.84, 0.0) × 30%）
 pub fn generate_chunk_mesh(
     terrains: &[u8; 1024],
     owners: &[u8; 1024],
     fog: &[u8; 1024],
+    selected: &[u8; 1024],
     lod_level: u8,
 ) -> Mesh {
     match lod_level {
-        0 => generate_full_mesh(terrains, owners, fog),
-        1 => generate_merged_mesh(terrains, owners, fog, 2),
-        2 => generate_merged_mesh(terrains, owners, fog, 4),
-        3 => generate_minimap_mesh(terrains, owners, fog),
-        _ => generate_full_mesh(terrains, owners, fog),
+        0 => generate_full_mesh(terrains, owners, fog, selected),
+        1 => generate_merged_mesh(terrains, owners, fog, selected, 2),
+        2 => generate_merged_mesh(terrains, owners, fog, selected, 4),
+        3 => generate_minimap_mesh(terrains, owners, fog, selected),
+        _ => generate_full_mesh(terrains, owners, fog, selected),
     }
 }
 
@@ -66,8 +68,9 @@ pub fn generate_chunk_mesh_with_transitions(
     terrains: &[u8; 1024],
     owners: &[u8; 1024],
     fog: &[u8; 1024],
+    selected: &[u8; 1024],
 ) -> Mesh {
-    let base_mesh = generate_full_mesh(terrains, owners, fog);
+    let base_mesh = generate_full_mesh(terrains, owners, fog, selected);
     let transition_overlay = transition::generate_transition_mesh(terrains);
     merge_meshes(base_mesh, transition_overlay)
 }
@@ -155,12 +158,18 @@ pub fn rebuild_dirty_chunks(
 
         // Full LOD 时启用地形过渡渲染，更高 LOD 级别跳过过渡以节省性能
         let new_mesh = if chunk.current_lod == 0 {
-            generate_chunk_mesh_with_transitions(&chunk.terrains, &chunk.owners, &chunk.fog)
+            generate_chunk_mesh_with_transitions(
+                &chunk.terrains,
+                &chunk.owners,
+                &chunk.fog,
+                &chunk.selected,
+            )
         } else {
             generate_chunk_mesh(
                 &chunk.terrains,
                 &chunk.owners,
                 &chunk.fog,
+                &chunk.selected,
                 chunk.current_lod,
             )
         };
@@ -178,7 +187,12 @@ pub fn rebuild_dirty_chunks(
 // Full LOD：每个 hex 一个六边形
 // ---------------------------------------------------------------------------
 
-fn generate_full_mesh(terrains: &[u8; 1024], owners: &[u8; 1024], fog: &[u8; 1024]) -> Mesh {
+fn generate_full_mesh(
+    terrains: &[u8; 1024],
+    owners: &[u8; 1024],
+    fog: &[u8; 1024],
+    selected: &[u8; 1024],
+) -> Mesh {
     // 预分配：1024 hex * 7 vertices = 7168 vertices, 1024 * 18 indices = 18432
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(7168);
     let mut normals: Vec<[f32; 3]> = Vec::with_capacity(7168);
@@ -192,16 +206,27 @@ fn generate_full_mesh(terrains: &[u8; 1024], owners: &[u8; 1024], fog: &[u8; 102
             let terrain_id = terrains[idx];
             let owner_id = owners[idx];
             let is_fogged = fog[idx] == 0;
+            let is_selected = selected[idx] != 0;
 
             let center = hex_center(row, col);
             let terrain_col = atlas::terrain_color_from_u8(terrain_id);
             let faction_col = atlas::faction_color(owner_id);
             let final_color = blend_colors(terrain_col, faction_col);
-            // 黑雾：颜色 × 0.3 + 黑 0.0 (alpha 保持 1.0)
+            // 黑雾：颜色 × 0.55
             let final_color = if is_fogged {
                 let s = final_color.to_srgba();
-                // 0.55 调暗（之前 0.3 太暗看着像遮罩，0.55 让玩家能看清地形但不显眼）
                 Color::srgb(s.red * 0.55, s.green * 0.55, s.blue * 0.55)
+            } else {
+                final_color
+            };
+            // M9: 选中 → 颜色 lerp 到金色 (1.0, 0.84, 0.0) × 30% (即 70% 原本 + 30% 金色)
+            let final_color = if is_selected {
+                let s = final_color.to_srgba();
+                Color::srgb(
+                    s.red * 0.7 + 1.0 * 0.3,
+                    s.green * 0.7 + 0.84 * 0.3,
+                    s.blue * 0.7,
+                )
             } else {
                 final_color
             };
@@ -246,6 +271,7 @@ fn generate_merged_mesh(
     terrains: &[u8; 1024],
     _owners: &[u8; 1024],
     fog: &[u8; 1024],
+    _selected: &[u8; 1024],
     merge_size: u32,
 ) -> Mesh {
     let chunks_per_row = 32 / merge_size;
@@ -340,8 +366,13 @@ fn generate_merged_mesh(
 // Minimap LOD：整个 Chunk 一个色块
 // ---------------------------------------------------------------------------
 
-fn generate_minimap_mesh(terrains: &[u8; 1024], owners: &[u8; 1024], fog: &[u8; 1024]) -> Mesh {
-    generate_merged_mesh(terrains, owners, fog, 32)
+fn generate_minimap_mesh(
+    terrains: &[u8; 1024],
+    owners: &[u8; 1024],
+    fog: &[u8; 1024],
+    selected: &[u8; 1024],
+) -> Mesh {
+    generate_merged_mesh(terrains, owners, fog, selected, 32)
 }
 
 // ---------------------------------------------------------------------------

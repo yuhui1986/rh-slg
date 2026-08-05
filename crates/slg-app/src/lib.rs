@@ -146,6 +146,7 @@ impl Plugin for SlgAppPlugin {
             .init_resource::<CityManagerResource>()
             .init_resource::<SelectedHex>() // M8 UI
             .add_event::<BuildAction>()     // M8 UI
+            .add_event::<BattleReportEvent>() // M9
             // 启动系统：生成地图、初始化势力
             .add_systems(Startup, setup_game)
             // 主菜单动作处理 + 地图点击
@@ -171,6 +172,8 @@ impl Plugin for SlgAppPlugin {
             .add_systems(Update, check_victory_system)
             // M8 UI: 处理建筑/分城指令
             .add_systems(Update, handle_build_order)
+            // M9: 把战报 event 写进 BattleReportState
+            .add_systems(Update, handle_battle_report)
             // 游戏循环系统：在 tick_dispatcher 之后运行
             .add_systems(
                 Update,
@@ -297,6 +300,33 @@ impl From<HexCoord> for Coord {
     fn from(c: HexCoord) -> Self {
         Coord(c)
     }
+}
+
+// ---------------------------------------------------------------------------
+// M9: 战报 Event
+// ---------------------------------------------------------------------------
+
+/// M9: 战斗结果 (UI 浮窗用)
+#[derive(Event, Debug, Clone)]
+pub struct BattleReportEvent {
+    /// 攻方 faction id
+    pub attacker: String,
+    /// 守方 faction id
+    pub defender: String,
+    /// 战斗发生格 (arrival.to)
+    pub coord: HexCoord,
+    /// 当前 tick
+    pub tick: u64,
+    /// 战报结果: "Victory" / "Defeat" / "Draw"
+    pub result: String,
+    /// 攻方剩余 troops
+    pub attacker_remaining: u32,
+    /// 守方剩余 troops
+    pub defender_remaining: u32,
+    /// 攻方初始 troops
+    pub attacker_initial: u32,
+    /// 守方初始 troops
+    pub defender_initial: u32,
 }
 
 /// 游戏阶段
@@ -615,11 +645,17 @@ fn start_new_game(
             owners, // 已填充归属
             levels: core_chunk.levels,
             fog: fog_arr, // 已填充迷雾
+            selected: [0; 1024], // M9: 初始全未选中
             dirty: true,
             current_lod: 0,
         };
 
-        let mesh = build_chunk_mesh_with_transitions(&core_chunk.terrains, &owners, &fog_arr);
+        let mesh = build_chunk_mesh_with_transitions(
+            &core_chunk.terrains,
+            &owners,
+            &fog_arr,
+            &[0u8; 1024],
+        );
         let mesh_handle = meshes.add(mesh);
         let material_handle = materials.add(ColorMaterial::default());
 
@@ -863,6 +899,7 @@ fn process_tick_phases(
     city_res: Res<CityManagerResource>,
     mut game_state: ResMut<GameState>,
     mut chunk_query: Query<&mut EngineChunkData>,
+    mut battle_events: EventWriter<BattleReportEvent>, // M9
 ) {
     // 只在游戏进行中处理 tick
     if game_state.phase != GamePhase::Playing {
@@ -981,6 +1018,8 @@ fn process_tick_phases(
                                     &faction_id_map,
                                     &faction_res.store,
                                     &building_res.manager,
+                                    game_state.tick,
+                                    &mut battle_events,
                                 );
                             }
                         }
@@ -1177,6 +1216,30 @@ fn sync_chunk_owner(
     }
 }
 
+/// M9: 同步 chunk 的 selected 数组
+///
+/// 玩家点己方格 / 取消选中 时调用
+/// - `selected = true` → 颜色叠加金色
+/// - `selected = false` → 恢复原本颜色
+fn sync_chunk_selection(
+    target: HexCoord,
+    selected: bool,
+    chunk_query: &mut Query<&mut EngineChunkData>,
+) {
+    let cx = target.q / 32;
+    let cy = target.r / 32;
+    let lx = (target.q % 32) as usize;
+    let ly = (target.r % 32) as usize;
+    let local_idx = ly * 32 + lx;
+    for mut chunk in chunk_query.iter_mut() {
+        if chunk.chunk_x == cx && chunk.chunk_y == cy {
+            chunk.selected[local_idx] = if selected { 1 } else { 0 };
+            chunk.dirty = true;
+            break;
+        }
+    }
+}
+
 /// M7 战斗：行军到达时如果目标已被敌方占据, 触发战斗
 ///
 /// 战斗公式: `slg_core::rule::combat::simulate` (8 回合 / 速度定序 / 战法概率 / 普攻 / 士气)
@@ -1203,6 +1266,8 @@ fn handle_combat(
     faction_id_map: &FactionIdMap,
     faction_store: &slg_core::resource::FactionStore,
     building_manager: &slg_core::building::BuildingManager,
+    current_tick: u64, // M9: 战报用
+    battle_events: &mut EventWriter<BattleReportEvent>, // M9
 ) {
     // 目标格地形
     let target_key = arrival.to.to_tile_key();
@@ -1300,6 +1365,18 @@ fn handle_combat(
                 defender_troops, final_def,
                 report.rounds.len()
             );
+            // M9: 战报 event
+            battle_events.send(BattleReportEvent {
+                attacker: arrival.faction_id.clone(),
+                defender: defender_faction.clone(),
+                coord: arrival.to,
+                tick: current_tick,
+                result: "Victory".to_string(),
+                attacker_initial: attacker_troops,
+                defender_initial: defender_troops,
+                attacker_remaining: final_atk,
+                defender_remaining: final_def,
+            });
         }
         "Defeat" => {
             // 攻方败: 行军失败
@@ -1311,6 +1388,17 @@ fn handle_combat(
                 defender_troops, final_def,
                 report.rounds.len()
             );
+            battle_events.send(BattleReportEvent {
+                attacker: arrival.faction_id.clone(),
+                defender: defender_faction.clone(),
+                coord: arrival.to,
+                tick: current_tick,
+                result: "Defeat".to_string(),
+                attacker_initial: attacker_troops,
+                defender_initial: defender_troops,
+                attacker_remaining: final_atk,
+                defender_remaining: final_def,
+            });
         }
         _ => {
             // 平局: 双方都扣兵, 目标格不变
@@ -1321,6 +1409,17 @@ fn handle_combat(
                 defender_troops, final_def,
                 report.rounds.len()
             );
+            battle_events.send(BattleReportEvent {
+                attacker: arrival.faction_id.clone(),
+                defender: defender_faction.clone(),
+                coord: arrival.to,
+                tick: current_tick,
+                result: "Draw".to_string(),
+                attacker_initial: attacker_troops,
+                defender_initial: defender_troops,
+                attacker_remaining: final_atk,
+                defender_remaining: final_def,
+            });
         }
     }
 }
@@ -1618,16 +1717,24 @@ fn handle_hex_click(
                     // 点己方格: toggle 选中
                     if selected_hex.coord == Some(coord) {
                         info!("[Playing] 🔘 取消选中: ({}, {})", coord.q, coord.r);
+                        // M9: 取消 chunk selected 标记
+                        sync_chunk_selection(coord, false, &mut chunk_query);
                         selected_hex.coord = None;
                     } else {
+                        // M9: 如果之前有别的选中格, 先取消它
+                        if let Some(prev) = selected_hex.coord {
+                            sync_chunk_selection(prev, false, &mut chunk_query);
+                        }
                         info!("[Playing] 🔘 选中: ({}, {})", coord.q, coord.r);
+                        sync_chunk_selection(coord, true, &mut chunk_query);
                         selected_hex.coord = Some(coord);
                     }
                     continue;
                 }
                 // 点非己方 / 邻接空地: 取消选中 + 尝试派兵
-                if selected_hex.coord.is_some() {
+                if let Some(prev) = selected_hex.coord {
                     info!("[Playing] 🔘 取消选中 (派兵/无效点)");
+                    sync_chunk_selection(prev, false, &mut chunk_query);
                     selected_hex.coord = None;
                 }
 
@@ -1738,6 +1845,7 @@ fn handle_build_order(
     mut faction_res: ResMut<FactionStoreResource>,
     territory_res: Res<TerritoryManagerResource>,
     mut selected_hex: ResMut<SelectedHex>,
+    mut chunk_query: Query<&mut EngineChunkData>, // M9: 取消选中时同步 chunk
 ) {
     for action in events.read() {
         let player_fid = game_state.player_faction_id.clone();
@@ -1822,8 +1930,41 @@ fn handle_build_order(
 
         // 操作完, 取消选中
         if selected_hex.coord == Some(target) {
+            sync_chunk_selection(target, false, &mut chunk_query);
             selected_hex.coord = None;
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M9: 战报 event → BattleReportState
+// ---------------------------------------------------------------------------
+
+/// 把 BattleReportEvent 写进 BattleReportState
+///
+/// 调用方: handle_combat (V/D/Draw) 发 event → 本 system 收 event → push 到 state.reports
+/// slg-ui 的 render_battle_report 已经从 state 读 reports 显示
+fn handle_battle_report(
+    mut events: EventReader<BattleReportEvent>,
+    mut battle_state: ResMut<slg_ui::panels::battle_report::BattleReportState>,
+) {
+    for event in events.read() {
+        battle_state.reports.push(slg_ui::panels::battle_report::BattleReportEntry {
+            tick: event.tick,
+            attacker: event.attacker.clone(),
+            defender: event.defender.clone(),
+            winner: event.result.clone(),
+            attacker_losses: event.attacker_initial - event.attacker_remaining,
+            defender_losses: event.defender_initial - event.defender_remaining,
+        });
+        // 显示 (浮窗默认显示)
+        battle_state.show = true;
+        info!(
+            "[BattleReport] 📜 Tick {}: {} vs {} → {} (loss {}/{})",
+            event.tick, event.attacker, event.defender, event.result,
+            event.attacker_initial - event.attacker_remaining,
+            event.defender_initial - event.defender_remaining,
+        );
     }
 }
 
@@ -1975,6 +2116,7 @@ mod bevy_tests {
         app.init_resource::<CityManagerResource>();    // M8
         app.init_resource::<SelectedHex>();            // M8 UI
         app.add_event::<BuildAction>();                 // M8 UI
+        app.add_event::<BattleReportEvent>();           // M9
         app.init_resource::<slg_engine::systems::GameClockResource>();
         app.init_resource::<slg_engine::systems::CommandQueueResource>();
         app.init_resource::<slg_ui::panels::game_over::GameOverState>();
@@ -3418,6 +3560,122 @@ mod bevy_tests {
         };
         assert_eq!(level, 2, "升级到 L2");
         eprintln!("TEST26 ✅: BuildAction::Upgrade → 农田 L1→L2");
+    }
+
+    // -----------------------------------------------------------------------
+    // M9: 选中高亮 + 战报浮窗
+    // -----------------------------------------------------------------------
+
+    /// TEST27: 选中己方格 → SelectedHex.coord = Some
+    #[test]
+    fn bevy_select_marks_selected_hex() {
+        use slg_engine::camera::HexClickEvent;
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        app.add_systems(Update, handle_hex_click);
+
+        let coord = HexCoord::new(68, 65);
+        app.world_mut().send_event(HexClickEvent {
+            coord,
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+
+        let selected = app.world().resource::<SelectedHex>();
+        assert_eq!(selected.coord, Some(coord), "SelectedHex 应设为主城");
+        eprintln!("TEST27 ✅: 选中 (68,65) → SelectedHex.coord = Some");
+    }
+
+    /// TEST28: 注入 BattleReportEvent (V) → BattleReportState.reports +1
+    #[test]
+    fn bevy_battle_report_victory_appended() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        app.init_resource::<slg_ui::panels::battle_report::BattleReportState>();
+        app.add_systems(Update, handle_battle_report);
+
+        app.world_mut().send_event(BattleReportEvent {
+            attacker: "faction_1".to_string(),
+            defender: "faction_2".to_string(),
+            coord: HexCoord::new(69, 65),
+            tick: 100,
+            result: "Victory".to_string(),
+            attacker_initial: 100,
+            defender_initial: 50,
+            attacker_remaining: 50,
+            defender_remaining: 0,
+        });
+        app.update();
+
+        let state = app.world().resource::<slg_ui::panels::battle_report::BattleReportState>();
+        assert_eq!(state.reports.len(), 1, "应有 1 条战报");
+        assert_eq!(state.reports[0].winner, "Victory");
+        assert_eq!(state.reports[0].attacker_losses, 50);
+        assert_eq!(state.reports[0].defender_losses, 50);
+        assert!(state.show, "战报应显示");
+        eprintln!(
+            "TEST28 ✅: 注入 BattleReportEvent (V) → BattleReportState.reports = 1"
+        );
+    }
+
+    /// TEST29: 注入 Defeat 战报 → reports +1
+    #[test]
+    fn bevy_battle_report_defeat_appended() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        app.init_resource::<slg_ui::panels::battle_report::BattleReportState>();
+        app.add_systems(Update, handle_battle_report);
+
+        app.world_mut().send_event(BattleReportEvent {
+            attacker: "faction_2".to_string(),
+            defender: "faction_1".to_string(),
+            coord: HexCoord::new(70, 65),
+            tick: 200,
+            result: "Defeat".to_string(),
+            attacker_initial: 100,
+            defender_initial: 200,
+            attacker_remaining: 0,
+            defender_remaining: 150,
+        });
+        app.update();
+
+        let state = app.world().resource::<slg_ui::panels::battle_report::BattleReportState>();
+        assert_eq!(state.reports.len(), 1);
+        assert_eq!(state.reports[0].winner, "Defeat");
+        assert_eq!(state.reports[0].attacker_losses, 100);
+        assert_eq!(state.reports[0].defender_losses, 50);
+        eprintln!("TEST29 ✅: 注入 BattleReportEvent (D) → reports +1");
+    }
+
+    /// TEST30: 连续 3 场战报 (V + D + Draw) → reports 累积
+    #[test]
+    fn bevy_battle_report_three_rounds_accumulate() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        app.init_resource::<slg_ui::panels::battle_report::BattleReportState>();
+        app.add_systems(Update, handle_battle_report);
+
+        for (tick, result) in [(1u64, "Victory"), (2, "Defeat"), (3, "Draw")] {
+            app.world_mut().send_event(BattleReportEvent {
+                attacker: "faction_1".to_string(),
+                defender: "faction_2".to_string(),
+                coord: HexCoord::new(60 + tick as i32, 65),
+                tick,
+                result: result.to_string(),
+                attacker_initial: 100,
+                defender_initial: 100,
+                attacker_remaining: 50,
+                defender_remaining: 50,
+            });
+        }
+        app.update();
+
+        let state = app.world().resource::<slg_ui::panels::battle_report::BattleReportState>();
+        assert_eq!(state.reports.len(), 3, "3 场战报应累积");
+        assert_eq!(state.reports[0].winner, "Victory");
+        assert_eq!(state.reports[1].winner, "Defeat");
+        assert_eq!(state.reports[2].winner, "Draw");
+        eprintln!("TEST30 ✅: 3 场战报 (V/D/Draw) 累积 → reports.len = 3");
     }
 }
 

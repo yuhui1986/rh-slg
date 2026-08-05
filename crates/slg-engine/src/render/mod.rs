@@ -31,6 +31,11 @@ pub struct ChunkData {
     /// 32x32 = 1024 格迷雾状态（0 = 黑雾, 1 = 揭开）
     /// 0 时 mesh 颜色调暗，玩家看不到地形细节
     pub fog: [u8; 1024],
+    /// 32x32 = 1024 格选中状态 (M9)
+    ///
+    /// 0 = 未选中, 1 = 选中
+    /// 选中时 mesh 颜色叠加金色 (0 = (1.0, 0.84, 0.0)) 给玩家视觉反馈
+    pub selected: [u8; 1024],
     /// 是否需要重建 mesh
     pub dirty: bool,
     /// 当前 LOD 级别（0=Full, 1=Merged4, 2=Merged16, 3=Minimap）
@@ -45,7 +50,8 @@ impl Default for ChunkData {
             terrains: [0; 1024],
             owners: [0; 1024],
             levels: [1; 1024],
-            fog: [1; 1024], // 默认全揭开（无雾）
+            fog: [1; 1024],   // 默认全揭开（无雾）
+            selected: [0; 1024], // 默认未选中
             dirty: true,
             current_lod: 0,
         }
@@ -85,13 +91,15 @@ pub fn chunk_world_offset(chunk_x: i32, chunk_y: i32) -> Vec2 {
 /// 供地图加载系统调用，创建新的 Chunk Entity。
 ///
 /// `fog`: 0 = 黑雾（颜色调暗到 30% 亮度）, 1 = 揭开
+/// `selected`: 0 = 未选中, 1 = 选中（叠加金色）
 pub fn build_chunk_mesh(
     terrains: &[u8; 1024],
     owners: &[u8; 1024],
     fog: &[u8; 1024],
+    selected: &[u8; 1024],
     lod_level: u8,
 ) -> Mesh {
-    generate_chunk_mesh(terrains, owners, fog, lod_level)
+    generate_chunk_mesh(terrains, owners, fog, selected, lod_level)
 }
 
 /// 生成带地形过渡效果的 Chunk mesh（Full LOD）
@@ -102,6 +110,7 @@ pub fn build_chunk_mesh_with_transitions(
     terrains: &[u8; 1024],
     owners: &[u8; 1024],
     fog: &[u8; 1024],
+    selected: &[u8; 1024],
 ) -> Mesh {
-    chunk_mesh::generate_chunk_mesh_with_transitions(terrains, owners, fog)
+    chunk_mesh::generate_chunk_mesh_with_transitions(terrains, owners, fog, selected)
 }
