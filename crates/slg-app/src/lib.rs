@@ -662,7 +662,9 @@ fn start_new_game(
             levels: core_chunk.levels,
             fog: fog_arr, // 已填充迷雾
             selected: [0; 1024], // M9: 初始全未选中
-            dirty: true,
+            // M10.2: dirty = false, 因为 mesh 已经在上面 build_chunk_mesh_with_transitions 建好,
+            // 不需要 rebuild。设 true 反而触发"重建相同 mesh" 与渲染线程抢
+            dirty: false,
             current_lod: 0,
         };
 

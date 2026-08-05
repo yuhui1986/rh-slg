@@ -28,7 +28,8 @@ pub const ROW_SPACING: f32 = HEX_HEIGHT * 0.75;
 pub const COL_SPACING: f32 = HEX_WIDTH;
 
 /// 每帧最多重建的 Chunk 数量
-const MAX_REBUILDS_PER_FRAME: usize = 16;
+/// M10.2: 16 → 4, 减少一帧内 mesh 替换数, 缓解视觉抢渲染 (用户报"新对局就抖")
+const MAX_REBUILDS_PER_FRAME: usize = 4;
 
 // ---------------------------------------------------------------------------
 // 公共接口
