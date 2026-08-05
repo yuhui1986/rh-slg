@@ -6,6 +6,8 @@
 use std::collections::BTreeMap;
 
 use bevy::prelude::*;
+use bevy::render::render_asset::RenderAssetUsages;
+use bevy::sprite::AlphaMode2d;
 use bevy_egui::{egui, EguiContexts};
 use slg_core::clock::*;
 use slg_core::gen::{generate_map, GenerationPreset};
@@ -222,6 +224,7 @@ struct MainCityMarker {
     #[allow(dead_code)] // 未来用于 hover/click → 弹出城池信息面板
     pub faction_id: FactionId,
     /// 主城 hex 坐标（debug 用：与 marker 的 world position 对比，确认是 hex 还是转换出错）
+    #[allow(dead_code)]
     pub hex: HexCoord,
 }
 
@@ -449,9 +452,9 @@ fn start_new_game(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<ColorMaterial>,
+    images: &mut Assets<Image>, // M10.3: atlas Image
     existing_chunks: &Query<Entity, With<EngineChunkData>>,
-    camera_query: &mut Query<&mut Transform, With<Camera2d>>,
-    projection_query: &mut Query<&mut Projection, With<Camera2d>>,
+    camera_query: &mut Query<(&mut Transform, &mut Projection), With<Camera2d>>,
     windows: &Query<&Window>,
 ) {
     // 根据剧本选择地图参数
@@ -607,6 +610,27 @@ fn start_new_game(
     // 生成并渲染 Chunk 实体
     let chunk_count = load_result.chunk_data.len();
 
+    // M10.3: 加载 atlas.png → Image handle, 创建 ColorMaterial with texture
+    // (所有 chunk 共享同一个 material, 节约 GPU)
+    let atlas_bytes = slg_engine::render::embedded_atlas::ATLAS_PNG;
+    let atlas_image = Image::from_buffer(
+        atlas_bytes,
+        bevy::image::ImageType::Extension("png"),
+        bevy::image::CompressedImageFormats::NONE,
+        true, // is_srgb
+        bevy::image::ImageSampler::nearest(), // pixel art 不要过滤
+        RenderAssetUsages::RENDER_WORLD,
+    )
+    .map_err(|e| format!("加载 atlas.png 失败: {}", e))
+    .expect("atlas.png 应能加载");
+    let atlas_image_handle = images.add(atlas_image);
+    let atlas_material_handle = materials.add(ColorMaterial {
+        color: Color::WHITE,
+        texture: Some(atlas_image_handle.clone()),
+        alpha_mode: AlphaMode2d::Blend, // 支持 hex mask 透明
+    });
+    let atlas_uv = slg_engine::render::embedded_atlas::AtlasUvRes::default().0;
+
     // 先把 terrain 全部灌进 TerrainMap（供 can_occupy 查询）
     terrain_map.map.clear();
     for core_chunk in &load_result.chunk_data {
@@ -676,9 +700,10 @@ fn start_new_game(
             &owners,
             &fog_arr,
             &[0u8; 1024],
+            &atlas_uv, // M10.3: 8 地形 UV
         );
         let mesh_handle = meshes.add(mesh);
-        let material_handle = materials.add(ColorMaterial::default());
+        let material_handle = atlas_material_handle.clone();
 
         let offset = chunk_world_offset(engine_chunk.chunk_x, engine_chunk.chunk_y);
 
@@ -702,7 +727,7 @@ fn start_new_game(
     let map_total_h = chunks_y as f32 * chunk_h;
     let map_center_x = map_total_w * 0.5;
     let map_center_y = map_total_h * 0.5;
-    if let Ok(mut transform) = camera_query.get_single_mut() {
+    if let Ok((mut transform, _)) = camera_query.get_single_mut() {
         transform.translation = Vec3::new(map_center_x, map_center_y, 0.0);
     }
 
@@ -749,7 +774,7 @@ fn start_new_game(
     let window_size = windows.single().resolution.size();
     let fit_scale =
         slg_engine::camera::compute_fit_ortho_scale(map_total_w, map_total_h, window_size.x, window_size.y, 1.0);
-    if let Ok(mut projection) = projection_query.get_single_mut() {
+    if let Ok((_, mut projection)) = camera_query.get_single_mut() {
         if let Projection::Orthographic(ref mut ortho) = *projection {
             ortho.scale = fit_scale;
         }
@@ -828,9 +853,11 @@ fn handle_new_game_actions(
     mut tile_res: ResMut<TileResourceMap>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut images: ResMut<Assets<Image>>, // M10.3: atlas Image
     existing_chunks: Query<Entity, With<EngineChunkData>>,
-    mut camera_query: Query<&mut Transform, With<Camera2d>>,
-    mut projection_query: Query<&mut Projection, With<Camera2d>>,
+    // M10.3: 合并 Transform + Projection 为 1 个 query, 砍掉 1 个 system arg
+    // (Bevy 0.15 system arg 上限 16, handle_new_game_actions 加 images 后 17 → 16)
+    mut camera_query: Query<(&mut Transform, &mut Projection), With<Camera2d>>,
     windows: Query<&Window>,
 ) {
     for action in action_events.read() {
@@ -849,9 +876,9 @@ fn handle_new_game_actions(
                     &mut commands,
                     &mut meshes,
                     &mut materials,
+                    &mut images,
                     &existing_chunks,
                     &mut camera_query,
-                    &mut projection_query,
                     &windows,
                 );
             }

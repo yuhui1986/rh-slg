@@ -4,6 +4,7 @@
 
 pub mod atlas;
 pub mod chunk_mesh;
+pub mod embedded_atlas;
 pub mod fog;
 pub mod lod;
 pub mod transition;
@@ -65,6 +66,8 @@ pub struct ChunkRenderPlugin;
 
 impl Plugin for ChunkRenderPlugin {
     fn build(&self, app: &mut App) {
+        // M10.3: 启动时从内嵌 JSON 解析 atlas UV, 注入到 Resource
+        app.init_resource::<embedded_atlas::AtlasUvRes>();
         app.add_systems(
             Update,
             (
@@ -92,14 +95,16 @@ pub fn chunk_world_offset(chunk_x: i32, chunk_y: i32) -> Vec2 {
 ///
 /// `fog`: 0 = 黑雾（颜色调暗到 30% 亮度）, 1 = 揭开
 /// `selected`: 0 = 未选中, 1 = 选中（叠加金色）
+/// `atlas_uv`: M10.3 美术 atlas 8 地形 UV 数组
 pub fn build_chunk_mesh(
     terrains: &[u8; 1024],
     owners: &[u8; 1024],
     fog: &[u8; 1024],
     selected: &[u8; 1024],
     lod_level: u8,
+    atlas_uv: &[[f32; 4]; 8],
 ) -> Mesh {
-    generate_chunk_mesh(terrains, owners, fog, selected, lod_level)
+    generate_chunk_mesh(terrains, owners, fog, selected, lod_level, atlas_uv)
 }
 
 /// 生成带地形过渡效果的 Chunk mesh（Full LOD）
@@ -111,6 +116,7 @@ pub fn build_chunk_mesh_with_transitions(
     owners: &[u8; 1024],
     fog: &[u8; 1024],
     selected: &[u8; 1024],
+    atlas_uv: &[[f32; 4]; 8],
 ) -> Mesh {
-    chunk_mesh::generate_chunk_mesh_with_transitions(terrains, owners, fog, selected)
+    chunk_mesh::generate_chunk_mesh_with_transitions(terrains, owners, fog, selected, atlas_uv)
 }

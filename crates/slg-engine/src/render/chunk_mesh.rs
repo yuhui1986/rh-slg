@@ -45,19 +45,21 @@ const MAX_REBUILDS_PER_FRAME: usize = 4;
 ///
 /// `fog`: 0 = 黑雾（颜色调暗到 30% 亮度）, 1 = 揭开（正常）
 /// `selected`: 0 = 未选中, 1 = 选中（叠加金色 (1.0, 0.84, 0.0) × 30%）
+/// `atlas_uv`: 8 地形 UV 数组 (索引 = TerrainType::to_u8), M10.3 接 atlas 用
 pub fn generate_chunk_mesh(
     terrains: &[u8; 1024],
     owners: &[u8; 1024],
     fog: &[u8; 1024],
     selected: &[u8; 1024],
     lod_level: u8,
+    atlas_uv: &[[f32; 4]; 8],
 ) -> Mesh {
     match lod_level {
-        0 => generate_full_mesh(terrains, owners, fog, selected),
-        1 => generate_merged_mesh(terrains, owners, fog, selected, 2),
-        2 => generate_merged_mesh(terrains, owners, fog, selected, 4),
-        3 => generate_minimap_mesh(terrains, owners, fog, selected),
-        _ => generate_full_mesh(terrains, owners, fog, selected),
+        0 => generate_full_mesh(terrains, owners, fog, selected, atlas_uv),
+        1 => generate_merged_mesh(terrains, owners, fog, selected, 2, atlas_uv),
+        2 => generate_merged_mesh(terrains, owners, fog, selected, 4, atlas_uv),
+        3 => generate_minimap_mesh(terrains, owners, fog, selected, atlas_uv),
+        _ => generate_full_mesh(terrains, owners, fog, selected, atlas_uv),
     }
 }
 
@@ -70,8 +72,9 @@ pub fn generate_chunk_mesh_with_transitions(
     owners: &[u8; 1024],
     fog: &[u8; 1024],
     selected: &[u8; 1024],
+    atlas_uv: &[[f32; 4]; 8],
 ) -> Mesh {
-    let base_mesh = generate_full_mesh(terrains, owners, fog, selected);
+    let base_mesh = generate_full_mesh(terrains, owners, fog, selected, atlas_uv);
     let transition_overlay = transition::generate_transition_mesh(terrains);
     merge_meshes(base_mesh, transition_overlay)
 }
@@ -149,6 +152,7 @@ pub fn rebuild_dirty_chunks(
     mut meshes: ResMut<Assets<Mesh>>,
     _materials: ResMut<Assets<ColorMaterial>>,
     mut query: Query<(Entity, &mut ChunkData, &Mesh2d)>,
+    atlas_uv: Res<crate::render::embedded_atlas::AtlasUvRes>,
 ) {
     let mut rebuilt = 0;
 
@@ -164,6 +168,7 @@ pub fn rebuild_dirty_chunks(
                 &chunk.owners,
                 &chunk.fog,
                 &chunk.selected,
+                &atlas_uv.0,
             )
         } else {
             generate_chunk_mesh(
@@ -172,6 +177,7 @@ pub fn rebuild_dirty_chunks(
                 &chunk.fog,
                 &chunk.selected,
                 chunk.current_lod,
+                &atlas_uv.0,
             )
         };
         let new_handle = meshes.add(new_mesh);
@@ -193,6 +199,7 @@ fn generate_full_mesh(
     owners: &[u8; 1024],
     fog: &[u8; 1024],
     selected: &[u8; 1024],
+    atlas_uv: &[[f32; 4]; 8],
 ) -> Mesh {
     // 预分配：1024 hex * 7 vertices = 7168 vertices, 1024 * 18 indices = 18432
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(7168);
@@ -210,35 +217,38 @@ fn generate_full_mesh(
             let is_selected = selected[idx] != 0;
 
             let center = hex_center(row, col);
-            let terrain_col = atlas::terrain_color_from_u8(terrain_id);
+            // M10.3: 从 atlas_uv 按 terrain_id 索引 (默认 0 = Plains 全白 fallback)
+            // uv: [u_min, v_min, u_max, v_max]
+            // `atlas_uv` 是 `&[[f32; 4]; 8]`, `.get(i)` 给 `Option<&[f32; 4]>`,
+            // `.copied()` 转成 `Option<[f32; 4]>` ([f32; 4] 是 Copy).
+            let uv_rect = atlas_uv
+                .get(terrain_id as usize)
+                .copied()
+                .unwrap_or([0.0, 0.0, 1.0, 1.0]); // fallback 整张图
+
+            // fog 走 alpha 通道 (0.55 = 雾, 1.0 = 正常)
+            // owner 走 rgb: 1.0 = 无染色, 势力色 = 该势力染色
+            // selected: rgb 70% + 金色 30% lerp
             let faction_col = atlas::faction_color(owner_id);
-            let final_color = blend_colors(terrain_col, faction_col);
-            // 黑雾：颜色 × 0.55
-            let final_color = if is_fogged {
-                let s = final_color.to_srgba();
-                Color::srgb(s.red * 0.55, s.green * 0.55, s.blue * 0.55)
+            let fc = faction_col.to_srgba();
+            let fog_alpha: f32 = if is_fogged { 0.55 } else { 1.0 };
+            let (r, g, b) = if is_selected {
+                // 70% 势力色 + 30% 金色
+                (fc.red * 0.7 + 1.0 * 0.3, fc.green * 0.7 + 0.84 * 0.3, fc.blue * 0.7)
             } else {
-                final_color
+                (fc.red, fc.green, fc.blue)
             };
-            // M9: 选中 → 颜色 lerp 到金色 (1.0, 0.84, 0.0) × 30% (即 70% 原本 + 30% 金色)
-            let final_color = if is_selected {
-                let s = final_color.to_srgba();
-                Color::srgb(
-                    s.red * 0.7 + 1.0 * 0.3,
-                    s.green * 0.7 + 0.84 * 0.3,
-                    s.blue * 0.7,
-                )
-            } else {
-                final_color
-            };
-            let color_arr = color_to_f32_4(final_color);
+            let color_arr = [r, g, b, fog_alpha];
 
             let vert_start = positions.len() as u32;
 
-            // 中心顶点
+            // 中心顶点: UV 在 tile 中心
             positions.push([center.x, center.y, 0.0]);
             normals.push([0.0, 0.0, 1.0]);
-            uvs.push([0.5, 0.5]);
+            uvs.push([
+                (uv_rect[0] + uv_rect[2]) * 0.5,
+                (uv_rect[1] + uv_rect[3]) * 0.5,
+            ]);
             colors.push(color_arr);
 
             // 6 个角顶点（pointy-top：起始角 30 度）
@@ -248,7 +258,11 @@ fn generate_full_mesh(
                 let y = center.y + HEX_SIZE * angle.sin();
                 positions.push([x, y, 0.0]);
                 normals.push([0.0, 0.0, 1.0]);
-                uvs.push([0.5 + 0.5 * angle.cos(), 0.5 + 0.5 * angle.sin()]);
+                // UV: 中心 + 0.5 * (cos, sin) * 范围, 加 0.5 (因为 hex mask 0.5 中心)
+                uvs.push([
+                    (uv_rect[0] + uv_rect[2]) * 0.5 + 0.5 * (uv_rect[2] - uv_rect[0]) * 0.5 * angle.cos(),
+                    (uv_rect[1] + uv_rect[3]) * 0.5 + 0.5 * (uv_rect[3] - uv_rect[1]) * 0.5 * angle.sin(),
+                ]);
                 colors.push(color_arr);
             }
 
@@ -274,6 +288,7 @@ fn generate_merged_mesh(
     fog: &[u8; 1024],
     _selected: &[u8; 1024],
     merge_size: u32,
+    _atlas_uv: &[[f32; 4]; 8],
 ) -> Mesh {
     let chunks_per_row = 32 / merge_size;
     let total = (chunks_per_row * chunks_per_row) as usize;
@@ -372,8 +387,9 @@ fn generate_minimap_mesh(
     owners: &[u8; 1024],
     fog: &[u8; 1024],
     selected: &[u8; 1024],
+    atlas_uv: &[[f32; 4]; 8],
 ) -> Mesh {
-    generate_merged_mesh(terrains, owners, fog, selected, 32)
+    generate_merged_mesh(terrains, owners, fog, selected, 32, atlas_uv)
 }
 
 // ---------------------------------------------------------------------------
@@ -387,23 +403,6 @@ pub fn hex_center(row: u32, col: u32) -> Vec2 {
     let x = col as f32 * COL_SPACING + if row % 2 == 1 { COL_SPACING * 0.5 } else { 0.0 };
     let y = row as f32 * ROW_SPACING;
     Vec2::new(x, y)
-}
-
-/// 颜色 alpha 混合
-///
-/// 将势力颜色叠加在地形颜色之上。若势力颜色完全透明则直接返回地形色。
-fn blend_colors(terrain: Color, faction: Color) -> Color {
-    let t = terrain.to_srgba();
-    let f = faction.to_srgba();
-    if f.alpha == 0.0 {
-        return terrain;
-    }
-    Color::srgba(
-        t.red * (1.0 - f.alpha) + f.red * f.alpha,
-        t.green * (1.0 - f.alpha) + f.green * f.alpha,
-        t.blue * (1.0 - f.alpha) + f.blue * f.alpha,
-        1.0,
-    )
 }
 
 /// Color 转 [f32; 4]（Srgba 顺序）
@@ -430,4 +429,129 @@ pub fn build_mesh(
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     mesh.insert_indices(Indices::U32(indices));
     mesh
+}
+
+// ---------------------------------------------------------------------------
+// M10.3 测试：chunk mesh 集成 atlas_uv
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 8 地形测试用 atlas_uv（每个地形 1 个独立 32x32 tile, 1024x1024 排成 8 块）
+    ///
+    /// terrain_id i 占用 [i*128, (i+1)*128] 范围, 中心 32x32 tile 简化测试。
+    fn fake_atlas_uv() -> [[f32; 4]; 8] {
+        let mut arr = [[0.0f32; 4]; 8];
+        for i in 0..8 {
+            let base = i as f32 * 0.125; // 1024 → 8 tile 一字排开
+            arr[i] = [base, 0.0, base + 0.03125, 0.03125]; // 32/1024 ≈ 0.03125
+        }
+        arr
+    }
+
+    /// TEST42: generate_full_mesh 用 atlas_uv 不 panic
+    /// 验证: terrains 0..8 各填一种, mesh 生成成功, vertex count = 1024 * 7
+    #[test]
+    fn test_generate_full_mesh_with_atlas_uv() {
+        let mut terrains = [0u8; 1024];
+        // 8 地形各占 1/8 区域 (前 128 列为 terrain 0, 后 128 列为 terrain 1, ...)
+        for i in 0..1024 {
+            terrains[i] = (i / 128) as u8;
+        }
+        let owners = [0u8; 1024];
+        let fog = [1u8; 1024];
+        let selected = [0u8; 1024];
+        let atlas_uv = fake_atlas_uv();
+
+        let mesh = generate_full_mesh(&terrains, &owners, &fog, &selected, &atlas_uv);
+
+        // 1024 hex * 7 vertices = 7168
+        let pos_count = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .map(|a| a.len())
+            .unwrap_or(0);
+        assert_eq!(pos_count, 7168, "Full mesh vertex count");
+
+        // UV 数量应一致
+        let uv_count = mesh
+            .attribute(Mesh::ATTRIBUTE_UV_0)
+            .map(|a| a.len())
+            .unwrap_or(0);
+        assert_eq!(uv_count, 7168, "Full mesh UV count");
+    }
+
+    /// TEST43: UV 随 terrain_id 改变 (不会所有 hex 都用同一张图)
+    /// 验证: 索引 0 (terrain 0) 中心 UV 在 arr[0] 范围, 索引 1023 (terrain 7) 中心 UV 在 arr[7] 范围
+    #[test]
+    fn test_uv_varies_per_terrain_id() {
+        let mut terrains = [0u8; 1024];
+        // 让 0..128 都用 terrain 0, 1024-128..1024 用 terrain 7
+        for i in 0..128 {
+            terrains[i] = 0;
+        }
+        for i in 896..1024 {
+            terrains[i] = 7;
+        }
+        let owners = [0u8; 1024];
+        let fog = [1u8; 1024];
+        let selected = [0u8; 1024];
+        let atlas_uv = fake_atlas_uv();
+
+        let mesh = generate_full_mesh(&terrains, &owners, &fog, &selected, &atlas_uv);
+        let uvs = mesh
+            .attribute(Mesh::ATTRIBUTE_UV_0)
+            .expect("UV attribute missing");
+
+        use bevy::render::mesh::VertexAttributeValues;
+        let uv_vec = match uvs {
+            VertexAttributeValues::Float32x2(v) => v,
+            _ => panic!("UV attribute wrong type"),
+        };
+
+        // 第一个 hex (index 0) 中心 vertex 是 uv_vec[0], 中心 UV = (arr[0][0]+arr[0][2])/2
+        let terrain0_center_u = (atlas_uv[0][0] + atlas_uv[0][2]) * 0.5;
+        let terrain7_center_u = (atlas_uv[7][0] + atlas_uv[7][2]) * 0.5;
+        // 第一个 hex (terrain 0) 中心 U
+        assert!(
+            (uv_vec[0][0] - terrain0_center_u).abs() < 0.0001,
+            "terrain 0 center U expected {}, got {}",
+            terrain0_center_u,
+            uv_vec[0][0]
+        );
+        // 最后一个 hex (index 1023, terrain 7) 中心 vertex 是 uv_vec[1023*7]
+        let last_hex_first_vert = 1023 * 7;
+        assert!(
+            (uv_vec[last_hex_first_vert][0] - terrain7_center_u).abs() < 0.0001,
+            "terrain 7 center U expected {}, got {}",
+            terrain7_center_u,
+            uv_vec[last_hex_first_vert][0]
+        );
+        // 验证两个 terrain UV 范围不同
+        assert!(
+            (terrain0_center_u - terrain7_center_u).abs() > 0.1,
+            "terrain UV ranges should differ: t0={} t7={}",
+            terrain0_center_u,
+            terrain7_center_u
+        );
+    }
+
+    /// TEST44: out-of-range terrain_id (>= 8) 走 fallback, 不 panic
+    #[test]
+    fn test_generate_full_mesh_out_of_range_terrain_fallback() {
+        let mut terrains = [255u8; 1024]; // 全是 out-of-range terrain_id
+        let owners = [0u8; 1024];
+        let fog = [1u8; 1024];
+        let selected = [0u8; 1024];
+        let atlas_uv = fake_atlas_uv();
+
+        let mesh = generate_full_mesh(&terrains, &owners, &fog, &selected, &atlas_uv);
+        // 不 panic 即可; vertex count 仍是 7168
+        let pos_count = mesh
+            .attribute(Mesh::ATTRIBUTE_POSITION)
+            .map(|a| a.len())
+            .unwrap_or(0);
+        assert_eq!(pos_count, 7168);
+    }
 }
