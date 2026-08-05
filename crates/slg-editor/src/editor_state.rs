@@ -72,6 +72,9 @@ pub struct EditorState {
     pub save_path: Option<PathBuf>,
     /// 状态消息 (最近一次 save / validate / error)
     pub status_message: String,
+    /// M10.2: 是否显示编辑器 UI (由 slg-app 同步 GamePhase, default = false)
+    /// 修复: render_editor_toolbar 之前没判断 phase, Menu/Playing 也会显示
+    pub show: bool,
 }
 
 impl Default for EditorState {
@@ -109,6 +112,7 @@ impl Default for EditorState {
             entity_type: "city".to_string(),
             save_path: None,
             status_message: String::new(),
+            show: false, // M10.2: 默认不显示, slg-app 同步 GamePhase
         }
     }
 }

@@ -8,6 +8,9 @@
 //! - 底部: status message (save/validate 反馈)
 //!
 //! 点击按钮 → 发 `EditorAction` event → `slg-editor::handle_editor_action` 处理
+//!
+//! M10.2: 加 `EditorState.show` 判断 — slg-app 在 phase 改变时同步此 flag,
+//! 否则 Menu/Playing 也会显示编辑器按钮 (slg-ui 不能直接读 slg-app::GameState)
 
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts};
@@ -20,6 +23,10 @@ pub fn render_editor_toolbar(
     mut action_events: EventWriter<EditorAction>,
     mut open_path_buffer: Local<String>,
 ) {
+    // M10.2: 不在 editor 模式时不画 (避免 Menu/Playing 误显示)
+    if !editor_state.show {
+        return;
+    }
     let ctx = contexts.ctx_mut();
 
     egui::TopBottomPanel::top("editor_toolbar").show(ctx, |ui| {

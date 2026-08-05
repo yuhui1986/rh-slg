@@ -164,6 +164,8 @@ impl Plugin for SlgAppPlugin {
             )
             // M9.2: 编辑器键盘快捷键 (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z / Ctrl+S)
             .add_systems(Update, handle_editor_keyboard)
+            // M10.2: 同步 EditorState.show 跟 GamePhase, 避免 Menu/Playing 显示编辑器按钮
+            .add_systems(Update, sync_editor_visibility)
             // 输入链路诊断系统（设置 HEX_PICK_DEBUG=1 启用）
             .add_systems(Update, input_diagnostics)
             // 点击涟漪生命周期
@@ -415,6 +417,18 @@ fn setup_game(
     menu_state.show = true;
 
     info!("游戏启动完成，显示主菜单");
+}
+
+/// M10.2: 同步 EditorState.show 跟 GamePhase
+///
+/// render_editor_toolbar 读 `editor_state.show` 决定是否画 UI.
+/// GamePhase 改变时,这个 system 把 `show` 同步过去.
+/// 避免 slg-ui 直接依赖 slg-app (循环依赖).
+fn sync_editor_visibility(
+    game_state: Res<GameState>,
+    mut editor_state: ResMut<slg_editor::editor_state::EditorState>,
+) {
+    editor_state.show = game_state.phase == GamePhase::Editor;
 }
 
 /// 根据配置生成地图并初始化游戏世界
