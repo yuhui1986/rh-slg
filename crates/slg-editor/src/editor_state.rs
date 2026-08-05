@@ -145,20 +145,49 @@ pub enum EditorAction {
 /// M9.1: 把 HexClickEvent 翻译成 EditorCommand 并 push 到 history
 ///
 /// - 玩家点 hex → 看 EditorState.current_tool → 构造对应命令 → history.execute
+///
+/// M9.3: Paint tool 笔刷拖动合并 (per-frame)
+/// - 同一 frame 内的多个 paint (拖动一帧多次) → 累积到 BatchPaintCommand
+/// - frame 末尾 flush 一次 → 1 个 undo
+/// - 跨 frame 的 paint 算新 stroke, 不合并
+/// - tool 切换 / brush_terrain 切换 / Undo → handle_editor_action 强制 flush
 pub fn dispatch_editor_tool(
     mut click_events: EventReader<slg_engine::camera::HexClickEvent>,
     mut editor_state: ResMut<EditorState>,
+    mut stroke_state: Local<StrokeState>,
 ) {
+    // ---- 开头: 检查是否需要 flush (tool 切到非 Paint) ----
+    if editor_state.current_tool != EditorTool::Paint && stroke_state.buffer.is_some() {
+        flush_stroke(&mut editor_state, &mut stroke_state);
+    }
+
     for event in click_events.read() {
         let coord = event.coord;
         let tool = editor_state.current_tool;
         // 构造命令 (借用 brush_terrain / entity_type 一次, 之后 split borrow history + doc)
         let cmd: Box<dyn crate::command::EditorCommand> = match tool {
             EditorTool::None => continue,
-            EditorTool::Paint => Box::new(crate::tool::PaintBrush::new(
-                coord,
-                editor_state.brush_terrain.clone(),
-            )),
+            EditorTool::Paint => {
+                // M9.3: 笔刷拖动合并 (per-frame)
+                let brush_terrain = editor_state.brush_terrain.clone();
+                let same_terrain = stroke_state.last_terrain.as_deref()
+                    == Some(brush_terrain.as_str());
+                if same_terrain && stroke_state.buffer.is_some() {
+                    // 累积到当前 batch
+                    if let Some(batch) = stroke_state.buffer.as_ref() {
+                        batch.add_stroke(coord, brush_terrain.clone());
+                    }
+                } else {
+                    // 不同 brush_terrain: flush 旧 + 开新
+                    flush_stroke(&mut editor_state, &mut stroke_state);
+                    let batch = crate::tool::BatchPaintCommand::new();
+                    batch.add_stroke(coord, brush_terrain.clone());
+                    stroke_state.buffer = Some(Box::new(batch));
+                    stroke_state.last_terrain = Some(brush_terrain);
+                }
+                // 不构造独立 cmd, 等 frame 末尾 flush
+                continue;
+            }
             EditorTool::PlaceEntity => Box::new(crate::tool::PlaceEntity {
                 coord,
                 entity_type: editor_state.entity_type.clone(),
@@ -205,6 +234,39 @@ pub fn dispatch_editor_tool(
             }
         }
     }
+
+    // ---- 末尾: flush 当前 stroke (任何 paint 都 commit) ----
+    // 即使只有 1 个 stroke, 也作为 1 个 undo commit
+    flush_stroke(&mut editor_state, &mut stroke_state);
+}
+
+/// M9.3: Paint stroke 累积状态 (跨 frame 保留, per-frame flush)
+#[derive(Default)]
+pub struct StrokeState {
+    /// 当前累积的 batch (None = 没有)
+    pub buffer: Option<Box<crate::tool::BatchPaintCommand>>,
+    /// 当前累积时的 brush_terrain (用来判断下一个 paint 是否同 stroke)
+    pub last_terrain: Option<String>,
+}
+
+/// M9.3: 把当前 stroke buffer 提交到 undo_stack
+///
+/// 只在 paint tool 且 buffer 非空时调用。
+fn flush_stroke(editor_state: &mut EditorState, stroke_state: &mut StrokeState) {
+    if let Some(batch) = stroke_state.buffer.take() {
+        let n = batch.len();
+        if n > 0 {
+            let state = &mut *editor_state;
+            let history = &mut state.history;
+            let doc = &mut state.doc;
+            if let Err(e) = history.execute(batch, doc) {
+                warn!("[Editor] stroke flush 失败: {}", e);
+            } else {
+                info!("[Editor] ✏️ stroke flush: {} paints → 1 undo", n);
+            }
+        }
+        stroke_state.last_terrain = None;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,8 +277,13 @@ pub fn dispatch_editor_tool(
 pub fn handle_editor_action(
     mut events: EventReader<EditorAction>,
     mut editor_state: ResMut<EditorState>,
+    mut stroke_state: Local<StrokeState>,
 ) {
     for action in events.read() {
+        // M9.3: 任何 action 都先 flush 当前 stroke (避免 tool 切换/Undo 后还有未 commit 的 paint)
+        if stroke_state.buffer.is_some() {
+            flush_stroke(&mut editor_state, &mut stroke_state);
+        }
         match action {
             EditorAction::SetTool(tool) => {
                 editor_state.current_tool = *tool;

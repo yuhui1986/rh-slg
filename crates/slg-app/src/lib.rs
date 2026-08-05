@@ -4106,6 +4106,146 @@ mod bevy_tests {
         // 清理
         let _ = std::fs::remove_file(&path);
     }
+
+    /// TEST39: 一帧内 2 次 paint 同 brush_terrain → 1 个 undo (BatchPaintCommand 合并)
+    /// M9.3: 笔刷拖动合并 (per-frame flush)
+    #[test]
+    fn bevy_editor_paint_stroke_merge_per_frame() {
+        let mut app = make_app();
+        {
+            let mut gs = app.world_mut().resource_mut::<GameState>();
+            gs.phase = GamePhase::Editor;
+        }
+        {
+            let mut state = app
+                .world_mut()
+                .resource_mut::<slg_editor::editor_state::EditorState>();
+            state.current_tool = slg_editor::editor_state::EditorTool::Paint;
+            state.brush_terrain = "terrain_forest".to_string();
+        }
+        app.add_systems(
+            Update,
+            slg_editor::editor_state::dispatch_editor_tool,
+        );
+        // 一帧内 2 个 click, 同 brush_terrain → 合并 1 个 undo
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(3, 3),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(4, 3),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+        let state = app
+            .world()
+            .resource::<slg_editor::editor_state::EditorState>();
+        assert_eq!(
+            state.history.undo_stack.len(),
+            1,
+            "一帧 2 paint 同 brush_terrain → 1 undo, 实际 {}",
+            state.history.undo_stack.len()
+        );
+        eprintln!("TEST39 ✅: 一帧 2 paint 同 brush_terrain → 1 undo (合并)");
+    }
+
+    /// TEST40: 一帧内 2 次 paint 不同 brush_terrain → 2 个 undo (开新 batch)
+    /// M9.3: 切换笔刷地形触发新 stroke
+    #[test]
+    fn bevy_editor_paint_stroke_split_on_terrain_change() {
+        let mut app = make_app();
+        {
+            let mut gs = app.world_mut().resource_mut::<GameState>();
+            gs.phase = GamePhase::Editor;
+        }
+        {
+            let mut state = app
+                .world_mut()
+                .resource_mut::<slg_editor::editor_state::EditorState>();
+            state.current_tool = slg_editor::editor_state::EditorTool::Paint;
+            state.brush_terrain = "terrain_forest".to_string();
+        }
+        app.add_systems(
+            Update,
+            (
+                slg_editor::editor_state::dispatch_editor_tool,
+                slg_editor::editor_state::handle_editor_action,
+            ),
+        );
+        // 第一次 paint: forest
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(3, 3),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+        // 切 brush_terrain → mountain (通过 SetBrushTerrain action)
+        app.world_mut().send_event(
+            slg_editor::editor_state::EditorAction::SetBrushTerrain(
+                "terrain_mountain".to_string(),
+            ),
+        );
+        app.update();
+        // 第二次 paint: mountain (不同 brush, 触发 flush 旧 + 开新)
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(4, 3),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+        let state = app
+            .world()
+            .resource::<slg_editor::editor_state::EditorState>();
+        assert_eq!(
+            state.history.undo_stack.len(),
+            2,
+            "切 brush_terrain 后 paint → 2 undo, 实际 {}",
+            state.history.undo_stack.len()
+        );
+        eprintln!("TEST40 ✅: 不同 brush_terrain → 2 undo (新 stroke)");
+    }
+
+    /// TEST41: 跨 frame 2 次 paint 同 brush_terrain → 2 个 undo (不跨 frame 合并)
+    /// M9.3: 跨 frame 不合并 (per-frame flush 限制)
+    #[test]
+    fn bevy_editor_paint_stroke_no_merge_across_frames() {
+        let mut app = make_app();
+        {
+            let mut gs = app.world_mut().resource_mut::<GameState>();
+            gs.phase = GamePhase::Editor;
+        }
+        {
+            let mut state = app
+                .world_mut()
+                .resource_mut::<slg_editor::editor_state::EditorState>();
+            state.current_tool = slg_editor::editor_state::EditorTool::Paint;
+            state.brush_terrain = "terrain_forest".to_string();
+        }
+        app.add_systems(
+            Update,
+            slg_editor::editor_state::dispatch_editor_tool,
+        );
+        // 帧 1: 1 个 paint
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(3, 3),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+        // 帧 2: 1 个 paint (跨 frame, 不合并)
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(4, 3),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+        let state = app
+            .world()
+            .resource::<slg_editor::editor_state::EditorState>();
+        assert_eq!(
+            state.history.undo_stack.len(),
+            2,
+            "跨 frame paint → 2 undo, 实际 {}",
+            state.history.undo_stack.len()
+        );
+        eprintln!("TEST41 ✅: 跨 frame 同 brush_terrain → 2 undo (不跨 frame 合并)");
+    }
 }
 
 

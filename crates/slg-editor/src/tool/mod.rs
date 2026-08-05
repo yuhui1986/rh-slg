@@ -63,6 +63,84 @@ impl EditorCommand for PaintBrush {
     }
 }
 
+/// M9.3: 批量 paint 命令, 把连续 stroke 合并成 1 个 undo
+///
+/// 用法: dispatch_editor_tool 累积同一 stroke 内的 paint,
+/// flush 时构造 BatchPaintCommand 一次性 push 到 undo_stack.
+pub struct BatchPaintCommand {
+    /// 累积的 stroke, old_terrain 在 execute 时填
+    pub strokes: Mutex<Vec<BatchStroke>>,
+}
+
+pub struct BatchStroke {
+    pub coord: HexCoord,
+    pub new_terrain: TerrainTypeId,
+    /// execute 时记录的原 terrain; undo 用
+    pub old_terrain: Option<TerrainTypeId>,
+}
+
+impl BatchPaintCommand {
+    pub fn new() -> Self {
+        Self {
+            strokes: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// 在 dispatch 阶段加一笔 stroke
+    pub fn add_stroke(&self, coord: HexCoord, new_terrain: TerrainTypeId) {
+        self.strokes.lock().unwrap().push(BatchStroke {
+            coord,
+            new_terrain,
+            old_terrain: None,
+        });
+    }
+
+    /// 当前累积的 stroke 数
+    pub fn len(&self) -> usize {
+        self.strokes.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.strokes.lock().unwrap().is_empty()
+    }
+}
+
+impl Default for BatchPaintCommand {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl EditorCommand for BatchPaintCommand {
+    fn execute(&self, doc: &mut MapDocument) -> Result<(), String> {
+        let mut strokes = self.strokes.lock().unwrap();
+        for stroke in strokes.iter_mut() {
+            let idx = coord_to_rle_idx(stroke.coord, doc.meta.width);
+            if idx >= doc.terrain.total_tiles as usize {
+                continue; // 跳过越界
+            }
+            let old = get_terrain_at(doc, idx);
+            if old == stroke.new_terrain {
+                continue; // 不变, 不入 old
+            }
+            stroke.old_terrain = Some(old);
+            set_terrain_at(doc, idx, &stroke.new_terrain);
+        }
+        Ok(())
+    }
+
+    fn undo(&self, doc: &mut MapDocument) -> Result<(), String> {
+        let strokes = self.strokes.lock().unwrap();
+        for stroke in strokes.iter() {
+            if let Some(ref old) = stroke.old_terrain {
+                let idx = coord_to_rle_idx(stroke.coord, doc.meta.width);
+                set_terrain_at(doc, idx, old);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// 把 HexCoord 转为 RLE local 索引
 ///
 /// RLE 是按 `total_tiles` 顺序压缩 (0..total_tiles), 用 `q + r*width` 映射
