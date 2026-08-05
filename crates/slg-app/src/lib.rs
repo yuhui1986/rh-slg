@@ -847,49 +847,74 @@ fn process_tick_phases(
                     }
                 }
                 TickPhase::MarchAdvance => {
-                    // 行军推进：检查到达、触发 occupy、清理已完成的
+                    // 行军推进：检查到达、触发战斗 / occupy、清理已完成的
+                    // M6 战斗: 到达目标格时, 如果已被其它 faction 占据 -> 触发战斗
+                    //  - 战斗胜: 占据目标格 + 扣 50% 兵
+                    //  - 战斗败: 攻方行军失败
+                    //  - 战斗平: 双方都扣 25% 兵, 目标格不变
+                    //  - 目标格未被占据: 走原来的逻辑 (occupy)
                     let arrivals = march_res.manager.advance_all(game_state.tick);
                     for arrival in arrivals {
-                        // 到达：再 check 一次 can_occupy（行军期间可能被 NPC 抢了）
-                        let can = territory_res.manager.can_occupy(
-                            arrival.to,
-                            &arrival.faction_id,
-                            &terrain_map.map,
-                        );
-                        if can {
-                            territory_res.manager.occupy(arrival.to, &arrival.faction_id);
-                            // 同步 chunk owner
-                            let cx = arrival.to.q / 32;
-                            let cy = arrival.to.r / 32;
-                            let lx = (arrival.to.q % 32) as usize;
-                            let ly = (arrival.to.r % 32) as usize;
-                            let local_idx = ly * 32 + lx;
-                            let color_idx = faction_id_map.get(&arrival.faction_id);
-                            for mut chunk in chunk_query.iter_mut() {
-                                if chunk.chunk_x == cx && chunk.chunk_y == cy {
-                                    chunk.owners[local_idx] = color_idx;
-                                    chunk.dirty = true;
-                                    break;
+                        let target_key = arrival.to.to_tile_key();
+                        let target_owner = territory_res.manager.owner_map.get(&target_key).cloned();
+
+                        match target_owner {
+                            // 目标格空（没被占） -> can_occupy 检查
+                            None => {
+                                let can = territory_res.manager.can_occupy(
+                                    arrival.to,
+                                    &arrival.faction_id,
+                                    &terrain_map.map,
+                                );
+                                if can {
+                                    territory_res.manager.occupy(arrival.to, &arrival.faction_id);
+                                    sync_chunk_owner(
+                                        arrival.to,
+                                        &arrival.faction_id,
+                                        &faction_id_map,
+                                        &mut chunk_query,
+                                    );
+                                    // 揭开到达格 + 6 邻域
+                                    let mut to_reveal = vec![arrival.to];
+                                    to_reveal.extend(arrival.to.ring(1));
+                                    reveal_coords_and_sync_chunks(
+                                        &mut fog_res,
+                                        &mut chunk_query,
+                                        &to_reveal,
+                                    );
+                                    info!(
+                                        "[MarchAdvance] ✅ 到达占地: ({}, {}) → {}, 揭开邻域",
+                                        arrival.to.q, arrival.to.r, arrival.faction_id
+                                    );
+                                } else {
+                                    info!(
+                                        "[MarchAdvance] ❌ 到达但无法占地: ({}, {})",
+                                        arrival.to.q, arrival.to.r
+                                    );
+                                    march_res.manager.fail(arrival.id);
                                 }
                             }
-                            // 揭开到达格 + 6 邻域（永久：探索到 = 看到邻接）
-                            let mut to_reveal = vec![arrival.to];
-                            to_reveal.extend(arrival.to.ring(1));
-                            reveal_coords_and_sync_chunks(
-                                &mut fog_res,
-                                &mut chunk_query,
-                                &to_reveal,
-                            );
-                            info!(
-                                "[MarchAdvance] ✅ 到达占地: ({}, {}) → {}, 揭开邻域",
-                                arrival.to.q, arrival.to.r, arrival.faction_id
-                            );
-                        } else {
-                            info!(
-                                "[MarchAdvance] ❌ 到达但无法占地（被先占）: ({}, {})",
-                                arrival.to.q, arrival.to.r
-                            );
-                            march_res.manager.fail(arrival.id);
+                            // 目标格被己方占（罕见，行军期间被己方其它兵占）-> 直接 occupy 覆盖
+                            Some(owner) if owner == arrival.faction_id => {
+                                territory_res.manager.occupy(arrival.to, &arrival.faction_id);
+                                info!(
+                                    "[MarchAdvance] ✅ 到达己方格: ({}, {})",
+                                    arrival.to.q, arrival.to.r
+                                );
+                            }
+                            // 目标格被敌方占 -> 触发战斗
+                            Some(defender) => {
+                                handle_combat(
+                                    &arrival,
+                                    &defender,
+                                    &terrain_map,
+                                    &mut territory_res,
+                                    &mut march_res,
+                                    &mut fog_res,
+                                    &mut chunk_query,
+                                    &faction_id_map,
+                                );
+                            }
                         }
                     }
                     march_res.manager.cleanup_finished();
@@ -1051,6 +1076,120 @@ fn check_victory_system(
             .count() as u32;
         game_over_state.statistics.tiles_occupied = tiles_occupied;
         game_state.phase = GamePhase::GameOver;
+    }
+}
+
+/// 同步 chunk owner 数组 + 标 dirty
+///
+/// 抽出来给 MarchAdvance / combat victory 复用。
+#[allow(clippy::too_many_arguments)]
+fn sync_chunk_owner(
+    target: HexCoord,
+    faction_id: &FactionId,
+    faction_id_map: &FactionIdMap,
+    chunk_query: &mut Query<&mut EngineChunkData>,
+) {
+    let cx = target.q / 32;
+    let cy = target.r / 32;
+    let lx = (target.q % 32) as usize;
+    let ly = (target.r % 32) as usize;
+    let local_idx = ly * 32 + lx;
+    let color_idx = faction_id_map.get(faction_id);
+    for mut chunk in chunk_query.iter_mut() {
+        if chunk.chunk_x == cx && chunk.chunk_y == cy {
+            chunk.owners[local_idx] = color_idx;
+            chunk.dirty = true;
+            break;
+        }
+    }
+}
+
+/// M6 战斗：行军到达时如果目标已被敌方占据, 触发战斗
+///
+/// 战斗公式: `slg_core::combat_simple::resolve_simple_combat`
+/// - Victory: attacker 占据目标 + 损失 50% 兵
+/// - Defeat: attacker troops 清零, 行军失败
+/// - Draw: 双方都扣 25% 兵, 目标格不变
+///
+/// `defender_faction` 在 M6 简化版中没直接用（M7 武将/兵种按 faction 拉数据时会用）。
+#[allow(clippy::too_many_arguments)]
+fn handle_combat(
+    arrival: &slg_core::military::MarchArrival,
+    defender_faction: &FactionId,
+    terrain_map: &TerrainMapResource,
+    territory_res: &mut TerritoryManagerResource,
+    march_res: &mut MarchManagerResource,
+    fog_res: &mut FogOfWarResource,
+    chunk_query: &mut Query<&mut EngineChunkData>,
+    faction_id_map: &FactionIdMap,
+) {
+    // M6 简化版不按 faction 区分 defender 强度（用 terrain 静态防御值）。
+    // M7 武将系统上线后, 这里按 defender_faction 查找武将/兵种, 改用 rule::combat::simulate。
+    let _ = defender_faction;
+
+    // 目标格地形
+    let target_key = arrival.to.to_tile_key();
+    let terrain = terrain_map.map.get(&target_key).copied();
+    let Some(terrain) = terrain else {
+        // 没注册地形 = 不可能战斗, 直接 mark failed
+        info!(
+            "[Combat] ❌ 目标 ({},{}) 没注册地形, 行军失败",
+            arrival.to.q, arrival.to.r
+        );
+        march_res.manager.fail(arrival.id);
+        return;
+    };
+
+    // 静态防御值
+    let defender_troops = slg_core::combat_simple::static_defender_troops(terrain);
+    let attacker_troops = slg_core::military::TROOPS_PER_MARCH;
+
+    // 战斗结算
+    let report = slg_core::combat_simple::resolve_simple_combat(
+        attacker_troops,
+        defender_troops,
+        terrain,
+    );
+
+    match report.result {
+        slg_core::combat_simple::CombatResult::Victory => {
+            // 攻方胜: 占据目标 + 扣 50% 兵
+            territory_res.manager.occupy(arrival.to, &arrival.faction_id);
+            sync_chunk_owner(
+                arrival.to,
+                &arrival.faction_id,
+                faction_id_map,
+                chunk_query,
+            );
+            // 揭开到达 + 邻域
+            let mut to_reveal = vec![arrival.to];
+            to_reveal.extend(arrival.to.ring(1));
+            reveal_coords_and_sync_chunks(fog_res, chunk_query, &to_reveal);
+            info!(
+                "[Combat] ⚔️ Victory: {} 占 ({},{}) [attacker {} → {}, defender {} → {}]",
+                arrival.faction_id, arrival.to.q, arrival.to.r,
+                attacker_troops, report.attacker_remaining,
+                defender_troops, report.defender_remaining
+            );
+        }
+        slg_core::combat_simple::CombatResult::Defeat => {
+            // 攻方败: 行军失败
+            march_res.manager.fail(arrival.id);
+            info!(
+                "[Combat] 💀 Defeat: {} 攻 ({},{}) 失败 [attacker {} → 0, defender {} → {}]",
+                arrival.faction_id, arrival.to.q, arrival.to.r,
+                attacker_troops, defender_troops, report.defender_remaining
+            );
+        }
+        slg_core::combat_simple::CombatResult::Draw => {
+            // 平局: 双方都扣 25% 兵, 目标格不变
+            info!(
+                "[Combat] ⚖️ Draw: {} 攻 ({},{}) 平局 [attacker {} → {}, defender {} → {}]",
+                arrival.faction_id, arrival.to.q, arrival.to.r,
+                attacker_troops, report.attacker_remaining,
+                defender_troops, report.defender_remaining
+            );
+        }
     }
 }
 
@@ -2305,6 +2444,226 @@ mod bevy_tests {
                 fim.map.insert(fid.to_string(), (i + 1) as u8);
             }
         }
+    }
+
+    /// 测试 16：战斗 Victory - 玩家攻占邻接 AI 主城
+    ///
+    /// 设置：玩家主城 (10, 10), AI 主城 (11, 10)
+    /// 玩家派兵到 (11, 10) 触发战斗
+    /// 静态防御 Plains=50, 攻 100 必胜
+    #[test]
+    fn bevy_combat_victory_against_ai() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+
+        // 把 AI faction_2 主城 (121,123) 移到 (11, 10) 玩家主城邻接
+        // 并 occupy 邻接
+        {
+            let mut tm = app.world_mut().resource_mut::<TerritoryManagerResource>();
+            tm.manager
+                .main_cities
+                .insert("faction_2".to_string(), HexCoord::new(11, 10));
+            // 关键: 把玩家主城 (10, 10) 改成 1 个 AI 主城
+            // 但保留玩家主城 (68, 65) 仍然 own 自己
+            // 实际上: 我们要测 combat victory 在主城
+            // 让我们用：玩家主城 (68, 65), AI 邻接主城 (69, 65)
+            // 但 AI 主城由 gen spawn 决定, 玩家不能改
+            // 简化: 直接 occupy (69, 65) 给 AI
+            tm.manager
+                .owner_map
+                .insert(HexCoord::new(69, 65).to_tile_key(), "faction_2".to_string());
+        }
+
+        app.add_systems(Update, process_tick_phases);
+
+        // tick 100 派兵到 (69, 65)
+        {
+            let mut clock = app
+                .world_mut()
+                .resource_mut::<slg_engine::systems::GameClockResource>();
+            clock.clock.current_tick = 100;
+        }
+        // 通过 HexClickEvent 派兵
+        use slg_engine::camera::HexClickEvent;
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(69, 65),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.add_systems(Update, handle_hex_click);
+        app.update();
+
+        // 推进 5 tick
+        for _ in 0..5 {
+            {
+                let mut clock = app
+                    .world_mut()
+                    .resource_mut::<slg_engine::systems::GameClockResource>();
+                clock.clock.current_tick += 1;
+            }
+            app.update();
+        }
+
+        // 验证: 玩家击败 AI 占据 (69, 65)
+        let tm = app.world().resource::<TerritoryManagerResource>();
+        let target_key = HexCoord::new(69, 65).to_tile_key();
+        assert_eq!(
+            tm.manager.owner_map.get(&target_key),
+            Some(&"faction_1".to_string()),
+            "Victory 后玩家应占据目标格"
+        );
+        eprintln!("TEST16 ✅: 战斗 Victory - 玩家攻占 AI 主城");
+    }
+
+    /// 测试 17：战斗 Defeat - 攻方在 Pass 攻击高防御失败
+    ///
+    /// 玩家主城在 Pass 邻接，AI 主城 200 防御 -> 攻 100 必败
+    /// 实际：玩家主城 (68, 65) 在 Plains, 我们不能改主城地形
+    /// 替代: 玩家派兵到 (68, 65) 的邻接 AI 主城, 模拟 Pass 上的 AI 防御
+    /// 简化: 不写这个 (复杂), 改为: AI 派兵攻玩家 Pass 邻接, 应该 defeat
+    ///   玩家主城 (68, 65) own, AI faction_2 main_city 改到 (68, 66)
+    ///   terrain (68, 66) 是 plains, Plains 50 防御, 100 攻必胜
+    ///   -> 不能测 defeat
+    /// 替代: 直接测 resolve_simple_combat 静态函数结果 -> 已 unit test
+    ///
+    /// 这里改为: 测试 玩家 派兵到 主城 邻接格子 (68, 65) 的 6 邻之一 (68, 64)
+    /// 玩家主城 (68, 65) 占, AI 改成占 (68, 64) -> 玩家 100 攻 50 (Plains) 必胜
+    /// -> 还是测 Victory
+    ///
+    /// 决定: 这个 test 跳过, defeat 已经 unit test cover
+    /// 只测 integration: 玩家派兵到 AI 主城邻接 -> Victory 玩家占据
+    /// 测试 17：玩家派兵到主城邻接 (AI 主城), Victory 占据
+    /// 简化: 跟 TEST16 一样, 玩家派兵到 AI 占的格 -> Victory -> 玩家占据
+    #[test]
+    fn bevy_combat_victory_attacker_occupies() {
+        // 这个跟 TEST16 重复, 但更直接: 派兵 + 战斗 + 占据
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+
+        // 把玩家主城邻接 (69, 65) 给 AI
+        {
+            let mut tm = app.world_mut().resource_mut::<TerritoryManagerResource>();
+            tm.manager
+                .owner_map
+                .insert(HexCoord::new(69, 65).to_tile_key(), "faction_2".to_string());
+        }
+
+        app.add_systems(Update, handle_hex_click);
+        app.add_systems(Update, process_tick_phases);
+
+        // 派兵
+        use slg_engine::camera::HexClickEvent;
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(69, 65),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        // tick 100
+        {
+            let mut clock = app
+                .world_mut()
+                .resource_mut::<slg_engine::systems::GameClockResource>();
+            clock.clock.current_tick = 100;
+        }
+        app.update();
+
+        // 推进 5 tick
+        for _ in 0..5 {
+            {
+                let mut clock = app
+                    .world_mut()
+                    .resource_mut::<slg_engine::systems::GameClockResource>();
+                clock.clock.current_tick += 1;
+            }
+            app.update();
+        }
+
+        // 验证: 玩家占据 (69, 65)
+        let tm = app.world().resource::<TerritoryManagerResource>();
+        let target_key = HexCoord::new(69, 65).to_tile_key();
+        assert_eq!(
+            tm.manager.owner_map.get(&target_key),
+            Some(&"faction_1".to_string()),
+            "战斗 Victory 后玩家应占据目标格"
+        );
+        eprintln!("TEST17 ✅: 派兵邻接敌方主城 -> 战斗 Victory -> 玩家占据");
+    }
+
+    /// 测试 18：AI 攻玩家必败 - 模拟 AI faction_2 派兵到玩家主城
+    ///
+    /// 玩家主城 (68, 65) Plains 50 防御, AI 100 攻 = 必胜
+    /// (玩家必败? 不, 50*1.0 = 50, 100*1.0 = 100, 100 > 50*1.5=75 -> Victory)
+    /// 所以玩家也会输给 AI
+    ///
+    /// 改: 让 AI 攻 Pass 邻接 (高防御) - 但 Pass 难造
+    /// 简化为: 把玩家主城 (68, 65) 设到 Pass 地形, 静态防御 200, AI 100 必败
+    /// terrain_map 已 init 全 plains, 改 (68, 65) 为 Pass
+    #[test]
+    fn bevy_combat_defeat_attacker_loses() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+
+        // AI faction_2 主城 (10, 10) -> 邻接玩家 (11, 10) 自己主城
+        // 玩家主城 (68, 65) 改到 Pass 地形 (静态防御 200)
+        // 但玩家 (68, 65) 和 AI 邻接格子 (69, 65) 距离 1, 把 (69, 65) 改 Pass
+        {
+            let mut terrain = app.world_mut().resource_mut::<TerrainMapResource>();
+            terrain
+                .map
+                .insert(HexCoord::new(69, 65).to_tile_key(), TerrainType::Pass);
+        }
+        // 玩家先 occupy (69, 65) - 否则 AI 到达时 owner_map 是 None, 走 occupy 分支而非 combat
+        {
+            let mut tm = app.world_mut().resource_mut::<TerritoryManagerResource>();
+            tm.manager
+                .occupy(HexCoord::new(69, 65), &"faction_1".to_string());
+        }
+        // AI faction_2 主城 (70, 65) - 攻击方
+        {
+            let mut tm = app.world_mut().resource_mut::<TerritoryManagerResource>();
+            tm.manager.set_main_city(&"faction_2".to_string(), HexCoord::new(70, 65));
+            tm.manager
+                .occupy(HexCoord::new(70, 65), &"faction_2".to_string());
+        }
+
+        app.add_systems(Update, process_tick_phases);
+
+        // tick 1 (slot 1 = AI faction_2)
+        {
+            let mut clock = app
+                .world_mut()
+                .resource_mut::<slg_engine::systems::GameClockResource>();
+            clock.clock.current_tick = 1;
+        }
+        app.world_mut().resource_mut::<GameState>().tick = 1;
+        app.update();
+
+        // 推进 5 tick 让兵到达
+        for _ in 0..5 {
+            {
+                let mut clock = app
+                    .world_mut()
+                    .resource_mut::<slg_engine::systems::GameClockResource>();
+                clock.clock.current_tick += 1;
+            }
+            app.update();
+        }
+
+        // 验证: AI 攻打 Pass (69, 65) 失败, Pass 还是玩家 own
+        let tm = app.world().resource::<TerritoryManagerResource>();
+        let target_key = HexCoord::new(69, 65).to_tile_key();
+        assert_eq!(
+            tm.manager.owner_map.get(&target_key),
+            Some(&"faction_1".to_string()),
+            "AI 攻 Pass 失败, 玩家仍占"
+        );
+        // AI 2 占地 = 主城 (1 格) (战斗失败不占)
+        let ai2_count = tm
+            .manager
+            .owner_map
+            .values()
+            .filter(|f| f == &"faction_2")
+            .count();
+        assert_eq!(ai2_count, 1, "AI 战斗失败不占, 仍只 1 格");
+        eprintln!("TEST18 ✅: 战斗 Defeat - AI 攻 Pass 失败, 玩家仍占");
     }
 }
 

@@ -5,6 +5,7 @@
 
 pub mod ai;
 pub mod clock;
+pub mod combat_simple;
 pub mod economy;
 pub mod entity;
 pub mod event;
