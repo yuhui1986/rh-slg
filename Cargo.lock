@@ -5186,8 +5186,10 @@ dependencies = [
 name = "slg-assets"
 version = "0.1.0"
 dependencies = [
+ "image",
  "ron",
  "serde",
+ "serde_json",
  "slg-core",
  "slg-data",
  "thiserror 2.0.19",

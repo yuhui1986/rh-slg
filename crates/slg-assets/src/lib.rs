@@ -2,6 +2,8 @@
 //!
 //! 负责 RON 数据表加载、Mod 合并、热重载。
 
+pub mod atlas;
+
 use slg_data::config::*;
 use slg_data::ids::*;
 use std::collections::BTreeMap;
