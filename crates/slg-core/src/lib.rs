@@ -4,6 +4,8 @@
 //! 包含 hex 网格、战斗模拟、经济、领地、AI、程序化生成等游戏核心逻辑。
 
 pub mod ai;
+pub mod building;
+pub mod city;
 pub mod clock;
 pub mod combat_simple;
 pub mod economy;

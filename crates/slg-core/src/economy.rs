@@ -172,6 +172,33 @@ pub fn apply_production(
     resources.stone = resources.stone.saturating_add(production.stone);
 }
 
+/// 把 `Building::resource_bonus()` (M8 ResourceBonus) 转 ResourceProduction
+pub fn from_building_bonus(bonus: &crate::building::ResourceBonus) -> ResourceProduction {
+    ResourceProduction {
+        gold: 0,
+        food: u64::from(bonus.food),
+        wood: u64::from(bonus.wood),
+        iron: u64::from(bonus.iron),
+        stone: u64::from(bonus.stone),
+    }
+}
+
+/// M8: 收集某 faction 的所有建筑资源加成, 应用到 FactionResources
+///
+/// # 参数
+/// - `building_manager`: 查所有该 faction 的建筑
+/// - `faction_id`: 要查的 faction
+/// - `faction_resources`: 目标资源 (直接加)
+pub fn apply_building_production(
+    building_manager: &crate::building::BuildingManager,
+    faction_id: &slg_data::ids::FactionId,
+    faction_resources: &mut crate::entity::faction::FactionResources,
+) {
+    let total = building_manager.total_resource_bonus_for(faction_id);
+    let production = from_building_bonus(&total);
+    apply_production(faction_resources, &production);
+}
+
 // ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
