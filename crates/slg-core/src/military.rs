@@ -13,8 +13,9 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use slg_data::ids::{FactionId, TileKey};
+use slg_data::ids::{FactionId, TileKey, UnitTypeId};
 
+use crate::entity::general::GeneralStats;
 use crate::map::grid::HexCoord;
 
 // ---------------------------------------------------------------------------
@@ -52,6 +53,10 @@ pub enum MarchStatus {
 ///
 /// 一支 MarchOrder = 一队兵从 `from` 到 `to` 的行军。
 /// `path` 是 hex 路径（含起点 from 和终点 to）。
+///
+/// M7：每队带 1 个主将 (`general`) + 兵种 (`unit_type`)。
+/// - `general` = `Option` 兼容 M0 无武将战斗的兜底
+/// - `unit_type` 必填（M0 简化版默认 `unit_infantry`）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarchOrder {
     /// 唯一 ID（spawn 时用 `MarchId::new()`）
@@ -72,6 +77,13 @@ pub struct MarchOrder {
     pub arrive_tick: u64,
     /// 当前状态
     pub status: MarchStatus,
+    /// 主将 (M7)
+    ///
+    /// M7 简化版：直接存 GeneralStats，无技能 / 无等级成长。
+    /// `None` 表示无主将（M0 兜底），战斗时退回到 `combat_simple`。
+    pub general: Option<GeneralStats>,
+    /// 兵种 (M7)
+    pub unit_type: UnitTypeId,
 }
 
 impl MarchOrder {
@@ -79,6 +91,9 @@ impl MarchOrder {
     ///
     /// 路径由 [`HexCoord::line`] 计算（axial line draw），MVP 简化版。
     /// 到达 tick = depart_tick + (path.len() - 1) * [`TICKS_PER_HEX`]
+    ///
+    /// M7：带主将 `general` + 兵种 `unit_type`。
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: u64,
         faction_id: FactionId,
@@ -86,6 +101,8 @@ impl MarchOrder {
         to: HexCoord,
         troops: u32,
         current_tick: u64,
+        general: Option<GeneralStats>,
+        unit_type: UnitTypeId,
     ) -> Self {
         let path = compute_path(from, to);
         let steps = if path.is_empty() { 0 } else { path.len() as u64 - 1 };
@@ -100,6 +117,8 @@ impl MarchOrder {
             depart_tick: current_tick,
             arrive_tick,
             status: MarchStatus::Marching,
+            general,
+            unit_type,
         }
     }
 
@@ -163,6 +182,11 @@ impl MarchManager {
     /// 派出一支新军
     ///
     /// 返回派出的 MarchOrder（id 已分配）。调用方需要把它 spawn 成 entity。
+    ///
+    /// M7：必传 `general` + `unit_type`。
+    /// - `general: None` 表示 M0 兜底战斗（用 `combat_simple`）
+    /// - `general: Some(...)` 走 `rule::combat::simulate`
+    #[allow(clippy::too_many_arguments)]
     pub fn dispatch(
         &mut self,
         faction_id: FactionId,
@@ -170,9 +194,20 @@ impl MarchManager {
         to: HexCoord,
         troops: u32,
         current_tick: u64,
+        general: Option<GeneralStats>,
+        unit_type: UnitTypeId,
     ) -> MarchOrder {
         let id = self.id_alloc.next_id();
-        let order = MarchOrder::new(id, faction_id, from, to, troops, current_tick);
+        let order = MarchOrder::new(
+            id,
+            faction_id,
+            from,
+            to,
+            troops,
+            current_tick,
+            general,
+            unit_type,
+        );
         self.orders.insert(id, order.clone());
         order
     }
@@ -181,7 +216,7 @@ impl MarchManager {
     ///
     /// 每 tick 调用一次。把已到达的 mark 成 `Arrived`（调用方负责触发 occupy + despawn）。
     ///
-    /// 返回本 tick 到达的 MarchOrder 列表（id, faction, coord）。
+    /// 返回本 tick 到达的 MarchOrder 列表（id, faction, coord, general, unit_type）。
     pub fn advance_all(&mut self, current_tick: u64) -> Vec<MarchArrival> {
         let mut arrivals = Vec::new();
         for order in self.orders.values_mut() {
@@ -195,6 +230,8 @@ impl MarchManager {
                     faction_id: order.faction_id.clone(),
                     to: order.to,
                     troops: order.troops,
+                    general: order.general.clone(),
+                    unit_type: order.unit_type.clone(),
                 });
             }
         }
@@ -248,6 +285,10 @@ pub struct MarchArrival {
     pub faction_id: FactionId,
     pub to: HexCoord,
     pub troops: u32,
+    /// M7：主将 (None = M0 兜底战斗)
+    pub general: Option<GeneralStats>,
+    /// M7：兵种
+    pub unit_type: UnitTypeId,
 }
 
 // ---------------------------------------------------------------------------
@@ -351,6 +392,8 @@ mod tests {
             HexCoord::new(1, 0),
             TROOPS_PER_MARCH,
             100, // depart_tick
+            None,
+            "unit_infantry".to_string(),
         );
         // 1 步 → 5 tick
         assert_eq!(order.arrive_tick, 105);
@@ -366,6 +409,8 @@ mod tests {
             HexCoord::new(5, 0),
             TROOPS_PER_MARCH,
             100,
+            None,
+            "unit_infantry".to_string(),
         );
         // 5 步 → 25 tick
         assert_eq!(order.arrive_tick, 125);
@@ -380,6 +425,8 @@ mod tests {
             HexCoord::new(5, 0),
             TROOPS_PER_MARCH,
             100,
+            None,
+            "unit_infantry".to_string(),
         );
         // 100 出发, 125 到达 (5 步 × 5 tick = 25 tick 总长)
         assert!((order.progress(100) - 0.0).abs() < 0.01);
@@ -398,6 +445,8 @@ mod tests {
             HexCoord::new(1, 0),
             TROOPS_PER_MARCH,
             100,
+            None,
+            "unit_infantry".to_string(),
         );
         assert_eq!(order.arrive_tick, 105);
         assert_eq!(mgr.orders.len(), 1);
@@ -429,6 +478,8 @@ mod tests {
             HexCoord::new(1, 0),
             TROOPS_PER_MARCH,
             100,
+            None,
+            "unit_infantry".to_string(),
         );
         assert!(mgr.cancel(order.id));
         assert_eq!(
@@ -446,6 +497,8 @@ mod tests {
             HexCoord::new(1, 0),
             TROOPS_PER_MARCH,
             100,
+            None,
+            "unit_infantry".to_string(),
         );
         mgr.advance_all(105); // mark Arrived
         mgr.cleanup_finished();
@@ -462,6 +515,8 @@ mod tests {
             HexCoord::new(1, 0),
             TROOPS_PER_MARCH,
             100,
+            None,
+            "unit_infantry".to_string(),
         );
         // (1, 0) 正在被飞向
         assert!(mgr.is_target_locked(HexCoord::new(1, 0)));
@@ -499,6 +554,61 @@ mod tests {
         assert_ne!(a, b);
         assert_ne!(b, c);
         assert!(a < b && b < c);
+    }
+
+    // -----------------------------------------------------------------------
+    // M7: 武将 + 兵种字段
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_march_order_with_general_and_unit_type() {
+        // M7: 派出时挂主将 + 兵种, 到达 MarchArrival 也保留
+        let general = GeneralStats {
+            strength: 90,
+            intelligence: 70,
+            command: 80,
+            politics: 60,
+            charisma: 50,
+            level: 5,
+            exp: 0,
+        };
+        let mut mgr = MarchManager::new();
+        let order = mgr.dispatch(
+            "faction_wei".to_string(),
+            HexCoord::new(0, 0),
+            HexCoord::new(1, 0),
+            TROOPS_PER_MARCH,
+            100,
+            Some(general.clone()),
+            "unit_cavalry".to_string(),
+        );
+        assert!(order.general.is_some());
+        assert_eq!(order.general.as_ref().unwrap().strength, 90);
+        assert_eq!(order.unit_type, "unit_cavalry");
+
+        // 到达时 MarchArrival 也带 general + unit_type
+        let arrivals = mgr.advance_all(105);
+        assert_eq!(arrivals.len(), 1);
+        assert!(arrivals[0].general.is_some());
+        assert_eq!(arrivals[0].unit_type, "unit_cavalry");
+    }
+
+    #[test]
+    fn test_march_order_without_general_compat() {
+        // M0 兼容：没有 general 时, MarchArrival 也 None
+        let mut mgr = MarchManager::new();
+        let _ = mgr.dispatch(
+            "faction_qun".to_string(),
+            HexCoord::new(0, 0),
+            HexCoord::new(1, 0),
+            TROOPS_PER_MARCH,
+            100,
+            None,
+            "unit_infantry".to_string(),
+        );
+        let arrivals = mgr.advance_all(105);
+        assert_eq!(arrivals.len(), 1);
+        assert!(arrivals[0].general.is_none());
     }
 
     // -----------------------------------------------------------------------

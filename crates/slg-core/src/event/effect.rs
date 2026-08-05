@@ -137,6 +137,7 @@ mod tests {
             },
             main_city: None,
             diplomacy: BTreeMap::new(),
+            ..Default::default()
         }
     }
 

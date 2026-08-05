@@ -11,7 +11,7 @@ use slg_data::ids::{FactionId, TileKey};
 use slg_data::map_doc::{EntityPlacement, MapDocument, TerrainLayer};
 use slg_data::save::SaveFile;
 
-use crate::entity::faction::{FactionPersonality, FactionResources, FactionState};
+use crate::entity::faction::{FactionResources, FactionState};
 use crate::map::tile::ResourceType;
 
 // ---------------------------------------------------------------------------
@@ -116,15 +116,8 @@ pub fn load_map(doc: &MapDocument) -> LoadResult {
         factions.insert(
             id,
             FactionState {
-                resources: FactionResources::default(),
-                personality: FactionPersonality {
-                    aggression: 0.5,
-                    expansion: 0.5,
-                    diplomacy: 0.5,
-                    caution: 0.5,
-                },
                 main_city: None,
-                diplomacy: BTreeMap::new(),
+                ..Default::default()
             },
         );
     }
@@ -244,14 +237,9 @@ pub fn load_save(save: &SaveFile, doc: &MapDocument) -> LoadResult {
                     stone: 0,
                     troops: fs.resources.troops,
                 },
-                personality: FactionPersonality {
-                    aggression: 0.5,
-                    expansion: 0.5,
-                    diplomacy: 0.5,
-                    caution: 0.5,
-                },
                 main_city: None,
                 diplomacy,
+                ..Default::default()
             },
         );
     }
@@ -329,6 +317,7 @@ fn parse_resource_type(s: &str) -> Result<ResourceType, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::faction::FactionPersonality;
     use slg_data::map_doc::{EntityLayer, MapMeta, ResourceLayer, RuleLayer};
 
     /// 构造一个 64x64 的测试 MapDocument
@@ -490,6 +479,7 @@ mod tests {
                 },
                 main_city: None,
                 diplomacy: BTreeMap::new(),
+                ..Default::default()
             },
         );
 

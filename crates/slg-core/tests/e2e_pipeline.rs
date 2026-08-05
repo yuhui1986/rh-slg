@@ -125,6 +125,8 @@ fn test_e2e_dispatch_march_arrive_occupy() {
         target,
         TROOPS_PER_MARCH,
         100, // depart_tick
+        None,
+        "unit_infantry".to_string(),
     );
     eprintln!(
         "E2E1: dispatched march {} from=({},{}) to=({},{}) arrive_tick={} (1 hex)",
@@ -258,7 +260,15 @@ fn test_e2e_target_locked_prevents_double_dispatch() {
     let target = HexCoord::new(player_city.q + 1, player_city.r);
 
     // 派第一支兵
-    let _ = march.dispatch(player_faction.clone(), player_city, target, TROOPS_PER_MARCH, 100);
+    let _ = march.dispatch(
+        player_faction.clone(),
+        player_city,
+        target,
+        TROOPS_PER_MARCH,
+        100,
+        None,
+        "unit_infantry".to_string(),
+    );
     assert!(
         march.is_target_locked(target),
         "target 应该在派兵后被锁住"
@@ -325,6 +335,8 @@ fn test_e2e_full_player_turn() {
             *target,
             TROOPS_PER_MARCH,
             100 + i as u64, // 错开出发 tick
+            None,
+            "unit_infantry".to_string(),
         );
         // 揭迷雾
         for c in &order.path {

@@ -142,7 +142,7 @@ pub fn setup_game(
                 faction_setup.main_city.0,
                 faction_setup.main_city.1,
             )),
-            diplomacy: BTreeMap::new(),
+            ..Default::default()
         };
 
         // 应用难度参数：调整资源

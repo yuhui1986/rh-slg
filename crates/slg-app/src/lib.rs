@@ -913,6 +913,7 @@ fn process_tick_phases(
                                     &mut fog_res,
                                     &mut chunk_query,
                                     &faction_id_map,
+                                    &faction_res.store,
                                 );
                             }
                         }
@@ -947,12 +948,17 @@ fn process_tick_phases(
                         );
                         if let Some(target) = target {
                             // 派兵（用 MarchManager + MarchAdvance 阶段落地）
+                            // M7: 挂 AI 主将 + 默认兵种 (步兵)
+                            let ai_general = faction.primary_general().cloned();
+                            let ai_unit = slg_core::entity::faction::FactionState::default_unit_type();
                             let order = march_res.manager.dispatch(
                                 faction_id.clone(),
                                 main_city,
                                 target,
                                 slg_core::military::TROOPS_PER_MARCH,
                                 current_tick,
+                                ai_general,
+                                ai_unit,
                             );
                             // 揭迷雾（AI 派兵也会揭开）
                             for c in &order.path {
@@ -1104,14 +1110,20 @@ fn sync_chunk_owner(
     }
 }
 
-/// M6 战斗：行军到达时如果目标已被敌方占据, 触发战斗
+/// M7 战斗：行军到达时如果目标已被敌方占据, 触发战斗
 ///
-/// 战斗公式: `slg_core::combat_simple::resolve_simple_combat`
-/// - Victory: attacker 占据目标 + 损失 50% 兵
-/// - Defeat: attacker troops 清零, 行军失败
-/// - Draw: 双方都扣 25% 兵, 目标格不变
+/// 战斗公式: `slg_core::rule::combat::simulate` (8 回合 / 速度定序 / 战法概率 / 普攻 / 士气)
+/// 输入：attacker 主将 + 兵种 (来自 MarchArrival) / defender 主将 + 兵种 (从 defender_faction 查)
 ///
-/// `defender_faction` 在 M6 简化版中没直接用（M7 武将/兵种按 faction 拉数据时会用）。
+/// 胜负判定 (基于 CombatReport.final_troops):
+/// - atk > def → Victory: 占据目标 + 揭雾
+/// - atk < def → Defeat: 行军失败
+/// - atk == def → Draw: 双方都扣兵, 目标格不变
+///
+/// M7 简化：
+/// - Defender 兵力 = `static_defender_troops(terrain)` (M0 公式)
+/// - 武将没有"自带战法 / 等级成长"（M8 引入）
+/// - 兵种全 `unit_infantry` (M7 简化版; M8 改主将 unit_type)
 #[allow(clippy::too_many_arguments)]
 fn handle_combat(
     arrival: &slg_core::military::MarchArrival,
@@ -1122,16 +1134,12 @@ fn handle_combat(
     fog_res: &mut FogOfWarResource,
     chunk_query: &mut Query<&mut EngineChunkData>,
     faction_id_map: &FactionIdMap,
+    faction_store: &slg_core::resource::FactionStore,
 ) {
-    // M6 简化版不按 faction 区分 defender 强度（用 terrain 静态防御值）。
-    // M7 武将系统上线后, 这里按 defender_faction 查找武将/兵种, 改用 rule::combat::simulate。
-    let _ = defender_faction;
-
     // 目标格地形
     let target_key = arrival.to.to_tile_key();
     let terrain = terrain_map.map.get(&target_key).copied();
     let Some(terrain) = terrain else {
-        // 没注册地形 = 不可能战斗, 直接 mark failed
         info!(
             "[Combat] ❌ 目标 ({},{}) 没注册地形, 行军失败",
             arrival.to.q, arrival.to.r
@@ -1140,20 +1148,69 @@ fn handle_combat(
         return;
     };
 
-    // 静态防御值
-    let defender_troops = slg_core::combat_simple::static_defender_troops(terrain);
+    // M7: 拿 attacker / defender 主将 + 兵种
+    let attacker_general_snapshot = arrival
+        .general
+        .clone()
+        .map(|stats| slg_core::rule::combat::GeneralSnapshot {
+            stats,
+            skills: vec![],
+            unit_type: arrival.unit_type.clone(),
+        });
+    let defender_general = faction_store
+        .factions
+        .get(defender_faction)
+        .and_then(|f| f.primary_general())
+        .cloned();
+    let defender_unit_type = slg_core::entity::faction::FactionState::default_unit_type();
+    let defender_general_snapshot = defender_general.clone().map(|stats| {
+        slg_core::rule::combat::GeneralSnapshot {
+            stats,
+            skills: vec![],
+            unit_type: defender_unit_type.clone(),
+        }
+    });
+
+    // 兵力 (M0 静态防御值)
     let attacker_troops = slg_core::military::TROOPS_PER_MARCH;
+    let defender_troops = slg_core::combat_simple::static_defender_troops(terrain);
 
-    // 战斗结算
-    let report = slg_core::combat_simple::resolve_simple_combat(
-        attacker_troops,
-        defender_troops,
+    // 构造 CombatInput + 调 simulate
+    let combat_input = slg_core::rule::combat::CombatInput {
+        seed: arrival.id.wrapping_add(terrain as u64),
+        attacker: slg_core::rule::combat::CombatSide {
+            generals: attacker_general_snapshot.into_iter().collect(),
+            troops: slg_core::rule::combat::TroopInfo {
+                unit_type: arrival.unit_type.clone(),
+                count: attacker_troops,
+                morale: 80.0,
+            },
+        },
+        defender: slg_core::rule::combat::CombatSide {
+            generals: defender_general_snapshot.into_iter().collect(),
+            troops: slg_core::rule::combat::TroopInfo {
+                unit_type: defender_unit_type,
+                count: defender_troops,
+                morale: 80.0,
+            },
+        },
         terrain,
-    );
+    };
+    let report = slg_core::rule::combat::simulate(combat_input);
+    let (final_atk, final_def) = report.final_troops;
 
-    match report.result {
-        slg_core::combat_simple::CombatResult::Victory => {
-            // 攻方胜: 占据目标 + 扣 50% 兵
+    // 胜负判定
+    let result_label = if final_atk > final_def {
+        "Victory"
+    } else if final_atk < final_def {
+        "Defeat"
+    } else {
+        "Draw"
+    };
+
+    match result_label {
+        "Victory" => {
+            // 攻方胜: 占据目标 + 揭雾
             territory_res.manager.occupy(arrival.to, &arrival.faction_id);
             sync_chunk_owner(
                 arrival.to,
@@ -1161,33 +1218,36 @@ fn handle_combat(
                 faction_id_map,
                 chunk_query,
             );
-            // 揭开到达 + 邻域
             let mut to_reveal = vec![arrival.to];
             to_reveal.extend(arrival.to.ring(1));
             reveal_coords_and_sync_chunks(fog_res, chunk_query, &to_reveal);
             info!(
-                "[Combat] ⚔️ Victory: {} 占 ({},{}) [attacker {} → {}, defender {} → {}]",
+                "[Combat] ⚔️ Victory: {} 占 ({},{}) [attacker {} → {}, defender {} → {}] ({} 回合)",
                 arrival.faction_id, arrival.to.q, arrival.to.r,
-                attacker_troops, report.attacker_remaining,
-                defender_troops, report.defender_remaining
+                attacker_troops, final_atk,
+                defender_troops, final_def,
+                report.rounds.len()
             );
         }
-        slg_core::combat_simple::CombatResult::Defeat => {
+        "Defeat" => {
             // 攻方败: 行军失败
             march_res.manager.fail(arrival.id);
             info!(
-                "[Combat] 💀 Defeat: {} 攻 ({},{}) 失败 [attacker {} → 0, defender {} → {}]",
+                "[Combat] 💀 Defeat: {} 攻 ({},{}) 失败 [attacker {} → {}, defender {} → {}] ({} 回合)",
                 arrival.faction_id, arrival.to.q, arrival.to.r,
-                attacker_troops, defender_troops, report.defender_remaining
+                attacker_troops, final_atk,
+                defender_troops, final_def,
+                report.rounds.len()
             );
         }
-        slg_core::combat_simple::CombatResult::Draw => {
-            // 平局: 双方都扣 25% 兵, 目标格不变
+        _ => {
+            // 平局: 双方都扣兵, 目标格不变
             info!(
-                "[Combat] ⚖️ Draw: {} 攻 ({},{}) 平局 [attacker {} → {}, defender {} → {}]",
+                "[Combat] ⚖️ Draw: {} 攻 ({},{}) 平局 [attacker {} → {}, defender {} → {}] ({} 回合)",
                 arrival.faction_id, arrival.to.q, arrival.to.r,
-                attacker_troops, report.attacker_remaining,
-                defender_troops, report.defender_remaining
+                attacker_troops, final_atk,
+                defender_troops, final_def,
+                report.rounds.len()
             );
         }
     }
@@ -1453,6 +1513,7 @@ fn handle_hex_click(
     mut fog_res: ResMut<FogOfWarResource>,
     terrain_map: Res<TerrainMapResource>,
     clock_res: Res<slg_engine::systems::GameClockResource>,
+    faction_res: Res<FactionStoreResource>, // M7: 拿玩家主将
     mut chunk_query: Query<&mut EngineChunkData>,
 ) {
     for event in click_events.read() {
@@ -1513,6 +1574,13 @@ fn handle_hex_click(
                     coord,
                     slg_core::military::TROOPS_PER_MARCH,
                     clock_res.clock.current_tick,
+                    faction_res
+                        .store
+                        .factions
+                        .get(&player_fid)
+                        .and_then(|f| f.primary_general())
+                        .cloned(),
+                    slg_core::entity::faction::FactionState::default_unit_type(),
                 );
 
                 // 同步更新目标格 chunks：先 lock（用玩家色 + 标记行军中）
@@ -1679,7 +1747,8 @@ fn input_diagnostics(
 mod bevy_tests {
     use super::*;
     use bevy::app::App;
-    use slg_core::entity::faction::{FactionPersonality, FactionResources, FactionState};
+    use slg_core::entity::faction::FactionState;
+    use slg_core::entity::general::GeneralStats;
     use slg_core::map::tile::TerrainType;
 
     /// 创建带 MinimalPlugins + 必要 resources 的 App
@@ -1744,20 +1813,23 @@ mod bevy_tests {
         }
 
         // FactionStore: faction_1
+        // M7: 玩家带 1 个主将 (中等武力, 准备后续用)
         {
             let mut fs = world.resource_mut::<FactionStoreResource>();
             fs.store.factions.insert(
                 "faction_1".to_string(),
                 FactionState {
-                    resources: FactionResources::default(),
-                    personality: FactionPersonality {
-                        aggression: 0.5,
-                        expansion: 0.5,
-                        diplomacy: 0.5,
-                        caution: 0.5,
-                    },
                     main_city: Some(main_city),
-                    diplomacy: Default::default(),
+                    generals: vec![GeneralStats {
+                        strength: 75,
+                        intelligence: 65,
+                        command: 70,
+                        politics: 60,
+                        charisma: 80,
+                        level: 5,
+                        exp: 0,
+                    }],
+                    ..Default::default()
                 },
             );
         }
@@ -2414,21 +2486,24 @@ mod bevy_tests {
         ];
         for (i, (fid, q, r)) in ai_data.iter().enumerate() {
             let c = HexCoord::new(*q, *r);
-            // FactionState
+            // FactionState - M7: 每个 AI 1 个主将 (武力随 index 微变, 后续可差异化)
             {
                 let mut fs = world.resource_mut::<FactionStoreResource>();
                 fs.store.factions.insert(
                     fid.to_string(),
                     FactionState {
-                        resources: FactionResources::default(),
-                        personality: FactionPersonality {
-                            aggression: 0.5,
-                            expansion: 0.5,
-                            diplomacy: 0.5,
-                            caution: 0.5,
-                        },
                         main_city: Some(c),
-                        diplomacy: Default::default(),
+                        // AI 武将武力 60 + i*5, 让 faction_2 较弱 faction_6 较强
+                        generals: vec![GeneralStats {
+                            strength: 60 + (i as u8) * 5,
+                            intelligence: 50,
+                            command: 55,
+                            politics: 40,
+                            charisma: 45,
+                            level: 3 + i as u16,
+                            exp: 0,
+                        }],
+                        ..Default::default()
                     },
                 );
             }

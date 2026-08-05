@@ -381,6 +381,7 @@ mod tests {
                 },
                 main_city: Some(HexCoord::new(0, 0)),
                 diplomacy: BTreeMap::new(),
+                ..Default::default()
             },
         )
     }
