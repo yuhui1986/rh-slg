@@ -41,6 +41,7 @@ impl Plugin for SlgUiPlugin {
                     new_game::render_new_game,
                     settings::render_settings,
                     game_over::render_game_over,
+                    editor_toolbar::render_editor_toolbar, // M9.1
                 ),
             );
     }

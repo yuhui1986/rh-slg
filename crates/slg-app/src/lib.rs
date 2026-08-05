@@ -2117,6 +2117,8 @@ mod bevy_tests {
         app.init_resource::<SelectedHex>();            // M8 UI
         app.add_event::<BuildAction>();                 // M8 UI
         app.add_event::<BattleReportEvent>();           // M9
+        app.init_resource::<slg_editor::editor_state::EditorState>(); // M9.1
+        app.add_event::<slg_editor::editor_state::EditorAction>();      // M9.1
         app.init_resource::<slg_engine::systems::GameClockResource>();
         app.init_resource::<slg_engine::systems::CommandQueueResource>();
         app.init_resource::<slg_ui::panels::game_over::GameOverState>();
@@ -3676,6 +3678,202 @@ mod bevy_tests {
         assert_eq!(state.reports[1].winner, "Defeat");
         assert_eq!(state.reports[2].winner, "Draw");
         eprintln!("TEST30 ✅: 3 场战报 (V/D/Draw) 累积 → reports.len = 3");
+    }
+
+    // -----------------------------------------------------------------------
+    // M9.1: 编辑器 - 工具 dispatch / Undo/Redo / Save/Load
+    // -----------------------------------------------------------------------
+
+    /// TEST31: 点 hex + Paint tool → doc 改 + history +1
+    #[test]
+    fn bevy_editor_dispatch_paint() {
+        let mut app = make_app();
+        // 设 tool = Paint (default)
+        app.add_systems(Update, slg_editor::editor_state::dispatch_editor_tool);
+
+        // 注入 HexClickEvent
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(5, 5),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+
+        let state = app.world().resource::<slg_editor::editor_state::EditorState>();
+        assert_eq!(
+            state.history.undo_stack.len(),
+            1,
+            "Paint 命令应被 push 到 undo_stack"
+        );
+        eprintln!("TEST31 ✅: Paint 工具 dispatch → history.undo_stack.len = 1");
+    }
+
+    /// TEST32: PlaceEntity tool → doc.entities.placements 含该格
+    #[test]
+    fn bevy_editor_dispatch_place_entity() {
+        let mut app = make_app();
+        // 切 tool = PlaceEntity
+        {
+            let mut state = app
+                .world_mut()
+                .resource_mut::<slg_editor::editor_state::EditorState>();
+            state.current_tool = slg_editor::editor_state::EditorTool::PlaceEntity;
+        }
+        app.add_systems(Update, slg_editor::editor_state::dispatch_editor_tool);
+
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(10, 10),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+
+        let state = app.world().resource::<slg_editor::editor_state::EditorState>();
+        let key = HexCoord::new(10, 10).to_tile_key();
+        assert!(
+            state.doc.entities.placements.contains_key(&key),
+            "PlaceEntity 应在 (10,10) 放实体"
+        );
+        let placement = state.doc.entities.placements.get(&key).unwrap();
+        assert_eq!(placement.entity_type, "city");
+        eprintln!(
+            "TEST32 ✅: PlaceEntity tool → (10,10) 放实体 type={}",
+            placement.entity_type
+        );
+    }
+
+    /// TEST33: EditorAction::Undo → history 撤销
+    #[test]
+    fn bevy_editor_undo_redo_via_action() {
+        let mut app = make_app();
+        // 准备: 先 dispatch 一个 PlaceEntity
+        app.add_systems(
+            Update,
+            (
+                slg_editor::editor_state::dispatch_editor_tool,
+                slg_editor::editor_state::handle_editor_action,
+            ),
+        );
+        {
+            let mut state = app
+                .world_mut()
+                .resource_mut::<slg_editor::editor_state::EditorState>();
+            state.current_tool = slg_editor::editor_state::EditorTool::PlaceEntity;
+        }
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(20, 20),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+
+        // 验证有 1 个 undo
+        assert_eq!(
+            app.world()
+                .resource::<slg_editor::editor_state::EditorState>()
+                .history
+                .undo_stack
+                .len(),
+            1
+        );
+
+        // 发 Undo action
+        app.world_mut()
+            .send_event(slg_editor::editor_state::EditorAction::Undo);
+        app.update();
+
+        let state = app.world().resource::<slg_editor::editor_state::EditorState>();
+        assert_eq!(state.history.undo_stack.len(), 0);
+        assert_eq!(state.history.redo_stack.len(), 1);
+        let key = HexCoord::new(20, 20).to_tile_key();
+        assert!(
+            !state.doc.entities.placements.contains_key(&key),
+            "Undo 后 (20,20) 实体应消失"
+        );
+
+        // 发 Redo action
+        app.world_mut()
+            .send_event(slg_editor::editor_state::EditorAction::Redo);
+        app.update();
+
+        let state = app.world().resource::<slg_editor::editor_state::EditorState>();
+        assert!(
+            state.doc.entities.placements.contains_key(&key),
+            "Redo 后 (20,20) 实体应回来"
+        );
+        eprintln!("TEST33 ✅: Undo/Redo via EditorAction → history 正确回滚/重做");
+    }
+
+    /// TEST34: EditorAction::SetTool → current_tool 切换
+    #[test]
+    fn bevy_editor_set_tool_action() {
+        let mut app = make_app();
+        app.add_systems(Update, slg_editor::editor_state::handle_editor_action);
+
+        // 切到 FloodFill
+        app.world_mut().send_event(
+            slg_editor::editor_state::EditorAction::SetTool(
+                slg_editor::editor_state::EditorTool::FloodFill,
+            ),
+        );
+        app.update();
+
+        let state = app.world().resource::<slg_editor::editor_state::EditorState>();
+        assert_eq!(state.current_tool, slg_editor::editor_state::EditorTool::FloodFill);
+        eprintln!("TEST34 ✅: EditorAction::SetTool → current_tool = FloodFill");
+    }
+
+    /// TEST35: EditorAction::Save → 写文件 → 读回 doc 一致
+    #[test]
+    fn bevy_editor_save_load_roundtrip() {
+        let mut app = make_app();
+        app.add_systems(
+            Update,
+            (
+                slg_editor::editor_state::dispatch_editor_tool,
+                slg_editor::editor_state::handle_editor_action,
+            ),
+        );
+        // 准备: 在 doc 放一个 city, 设 save_path
+        let path = std::env::temp_dir().join(format!(
+            "rh_slg_editor_test_{}.ron",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        ));
+        {
+            let mut state = app
+                .world_mut()
+                .resource_mut::<slg_editor::editor_state::EditorState>();
+            state.current_tool = slg_editor::editor_state::EditorTool::PlaceEntity;
+            state.save_path = Some(path.clone());
+        }
+        // 放 city
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(15, 15),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+
+        // Save (调 save_editor — 通过发 EditorAction::Save)
+        app.world_mut()
+            .send_event(slg_editor::editor_state::EditorAction::Save);
+        app.update();
+
+        // 文件应存在
+        assert!(path.exists(), "save_path 文件应被创建: {}", path.display());
+
+        // 读回: 新 EditorState → load_editor
+        let mut state2 = slg_editor::editor_state::EditorState::default();
+        slg_editor::editor_state::load_editor(&mut state2, path.clone()).unwrap();
+        assert_eq!(state2.doc.meta.name, "Untitled");
+        let key = HexCoord::new(15, 15).to_tile_key();
+        assert!(
+            state2.doc.entities.placements.contains_key(&key),
+            "load 后 (15,15) 实体应存在"
+        );
+
+        // 清理
+        let _ = std::fs::remove_file(&path);
+        eprintln!("TEST35 ✅: Editor Save → Load roundtrip 一致, 文件 {}", path.display());
     }
 }
 

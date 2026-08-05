@@ -3,6 +3,7 @@
 pub mod battle_report;
 pub mod build_panel;
 pub mod command_panel;
+pub mod editor_toolbar;
 pub mod gallery;
 pub mod game_over;
 pub mod main_menu;

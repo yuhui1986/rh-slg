@@ -4,7 +4,9 @@ use slg_core::map::grid::HexCoord;
 use slg_data::map_doc::*;
 
 /// 编辑器命令 trait
-pub trait EditorCommand {
+///
+/// M9.1: 加 `Send + Sync` bound 让 Box<dyn EditorCommand> 能放进 Bevy Resource
+pub trait EditorCommand: Send + Sync {
     /// 执行命令
     fn execute(&self, doc: &mut MapDocument) -> Result<(), String>;
     /// 撤销命令

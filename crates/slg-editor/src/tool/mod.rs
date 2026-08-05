@@ -1,4 +1,4 @@
-//! 编辑器工具：Paint / FloodFill / PlaceEntity / River / Select / Stamp
+﻿//! 编辑器工具：Paint / FloodFill / PlaceEntity / River / Select / Stamp
 
 pub mod river;
 pub mod select;
@@ -8,14 +8,14 @@ use crate::command::*;
 use slg_core::map::grid::HexCoord;
 use slg_data::ids::*;
 use slg_data::map_doc::*;
-use std::cell::RefCell;
+use std::sync::Mutex;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// PaintBrush 命令：修改单格地形类型
 pub struct PaintBrush {
     pub coord: HexCoord,
     pub new_terrain: TerrainTypeId,
-    pub old_terrain: RefCell<Option<TerrainTypeId>>,
+    pub old_terrain: Mutex<Option<TerrainTypeId>>,
 }
 
 impl PaintBrush {
@@ -23,7 +23,7 @@ impl PaintBrush {
         Self {
             coord,
             new_terrain,
-            old_terrain: RefCell::new(None),
+            old_terrain: Mutex::new(None),
         }
     }
 }
@@ -37,7 +37,7 @@ impl EditorCommand for PaintBrush {
         if idx < doc.terrain.total_tiles as usize {
             // 记录旧地形（简化：从 RLE 数据推断）
             let old = get_terrain_at(doc, idx);
-            *self.old_terrain.borrow_mut() = Some(old);
+            *self.old_terrain.lock().unwrap() = Some(old);
 
             // 简化：追加新地形段
             doc.terrain.rle_data.push((self.new_terrain.clone(), 1));
@@ -47,7 +47,7 @@ impl EditorCommand for PaintBrush {
 
     fn undo(&self, doc: &mut MapDocument) -> Result<(), String> {
         // 恢复旧地形（简化：移除末尾追加的段）
-        if let Some(old) = self.old_terrain.borrow().as_ref() {
+        if let Some(old) = self.old_terrain.lock().unwrap().as_ref() {
             if let Some(last) = doc.terrain.rle_data.last() {
                 if last.0 == *self.new_terrain && last.1 == 1 {
                     doc.terrain.rle_data.pop();
@@ -67,7 +67,9 @@ impl EditorCommand for PaintBrush {
 }
 
 /// 从 RLE 数据中获取指定索引处的地形类型（简化实现）
-fn get_terrain_at(doc: &MapDocument, idx: usize) -> TerrainTypeId {
+///
+/// M9.1: `pub` 让 editor_state.rs 的 FloodFill dispatch 可以复用
+pub fn get_terrain_at(doc: &MapDocument, idx: usize) -> TerrainTypeId {
     let mut pos = 0;
     for (terrain_id, count) in &doc.terrain.rle_data {
         pos += *count as usize;
@@ -84,7 +86,7 @@ pub struct FloodFill {
     pub start: HexCoord,
     pub target_terrain: TerrainTypeId,
     pub fill_terrain: TerrainTypeId,
-    pub affected: RefCell<Vec<HexCoord>>,
+    pub affected: Mutex<Vec<HexCoord>>,
 }
 
 impl FloodFill {
@@ -97,7 +99,7 @@ impl FloodFill {
             start,
             target_terrain,
             fill_terrain,
-            affected: RefCell::new(Vec::new()),
+            affected: Mutex::new(Vec::new()),
         }
     }
 
@@ -128,7 +130,7 @@ impl FloodFill {
                 continue;
             }
 
-            self.affected.borrow_mut().push(current);
+            self.affected.lock().unwrap().push(current);
 
             for neighbor in current.neighbors() {
                 let nkey = neighbor.to_tile_key();
@@ -143,7 +145,7 @@ impl FloodFill {
 
 impl EditorCommand for FloodFill {
     fn execute(&self, _doc: &mut MapDocument) -> Result<(), String> {
-        for _coord in self.affected.borrow().iter() {
+        for _coord in self.affected.lock().unwrap().iter() {
             // 修改每个格子的地形（简化实现：实际应解码 RLE、修改、重新编码）
         }
         Ok(())
@@ -186,14 +188,14 @@ impl EditorCommand for PlaceEntity {
 /// RemoveEntity 命令：移除实体
 pub struct RemoveEntity {
     pub coord: HexCoord,
-    pub removed: RefCell<Option<EntityPlacement>>,
+    pub removed: Mutex<Option<EntityPlacement>>,
 }
 
 impl RemoveEntity {
     pub fn new(coord: HexCoord) -> Self {
         Self {
             coord,
-            removed: RefCell::new(None),
+            removed: Mutex::new(None),
         }
     }
 }
@@ -202,12 +204,12 @@ impl EditorCommand for RemoveEntity {
     fn execute(&self, doc: &mut MapDocument) -> Result<(), String> {
         let key = self.coord.to_tile_key();
         let removed = doc.entities.placements.remove(&key);
-        *self.removed.borrow_mut() = removed;
+        *self.removed.lock().unwrap() = removed;
         Ok(())
     }
 
     fn undo(&self, doc: &mut MapDocument) -> Result<(), String> {
-        if let Some(placement) = self.removed.borrow().as_ref() {
+        if let Some(placement) = self.removed.lock().unwrap().as_ref() {
             let key = self.coord.to_tile_key();
             doc.entities.placements.insert(key, placement.clone());
         }
@@ -345,7 +347,7 @@ mod tests {
         );
         // 全部是平原，应该填充大量格子（受边界限制）
         fill.compute_fill(&doc, 32, 32);
-        let affected = fill.affected.borrow();
+        let affected = fill.affected.lock().unwrap();
         assert!(!affected.is_empty());
         // 起始点应该在受影响列表中
         assert!(affected.contains(&HexCoord::new(0, 0)));

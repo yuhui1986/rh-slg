@@ -6,6 +6,7 @@
 use bevy::prelude::*;
 
 pub mod command;
+pub mod editor_state;
 pub mod gallery;
 pub mod layer_panel;
 pub mod rule_editor;
@@ -34,5 +35,16 @@ impl Plugin for SlgEditorPlugin {
         // M3-T12: 注册剧本编辑器
         app.init_resource::<scenario_editor::ScenarioEditorState>()
             .add_systems(Update, scenario_editor::render_scenario_editor);
+
+        // M9.1: 编辑器运行时状态 + 工具 dispatch + Undo/Redo + Save
+        app.init_resource::<editor_state::EditorState>()
+            .add_event::<editor_state::EditorAction>()
+            .add_systems(
+                Update,
+                (
+                    editor_state::dispatch_editor_tool,
+                    editor_state::handle_editor_action,
+                ),
+            );
     }
 }

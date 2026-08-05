@@ -1,9 +1,9 @@
-//! 河流编辑工具：绘制、擦除、渡口标记
+﻿//! 河流编辑工具：绘制、擦除、渡口标记
 
 use crate::command::*;
 use slg_core::map::grid::HexCoord;
 use slg_data::map_doc::*;
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // RiverPaint 命令：在指定坐标绘制河流
@@ -15,7 +15,7 @@ use std::cell::RefCell;
 pub struct RiverPaint {
     pub coord: HexCoord,
     pub width: u8,
-    pub old_segment: RefCell<Option<RiverSegment>>,
+    pub old_segment: Mutex<Option<RiverSegment>>,
 }
 
 impl RiverPaint {
@@ -23,7 +23,7 @@ impl RiverPaint {
         Self {
             coord,
             width,
-            old_segment: RefCell::new(None),
+            old_segment: Mutex::new(None),
         }
     }
 }
@@ -38,7 +38,7 @@ impl EditorCommand for RiverPaint {
 
         // 保存旧数据（用于撤销）
         let old = doc.rivers.segments.get(&key).cloned();
-        *self.old_segment.borrow_mut() = old;
+        *self.old_segment.lock().unwrap() = old;
 
         doc.rivers.segments.insert(
             key,
@@ -53,7 +53,7 @@ impl EditorCommand for RiverPaint {
 
     fn undo(&self, doc: &mut MapDocument) -> Result<(), String> {
         let key = self.coord.to_tile_key();
-        if let Some(ref old) = *self.old_segment.borrow() {
+        if let Some(ref old) = *self.old_segment.lock().unwrap() {
             doc.rivers.segments.insert(key, old.clone());
         } else {
             doc.rivers.segments.remove(&key);
@@ -76,14 +76,14 @@ impl EditorCommand for RiverPaint {
 /// 擦除河流命令
 pub struct RiverErase {
     pub coord: HexCoord,
-    pub removed: RefCell<Option<RiverSegment>>,
+    pub removed: Mutex<Option<RiverSegment>>,
 }
 
 impl RiverErase {
     pub fn new(coord: HexCoord) -> Self {
         Self {
             coord,
-            removed: RefCell::new(None),
+            removed: Mutex::new(None),
         }
     }
 }
@@ -92,12 +92,12 @@ impl EditorCommand for RiverErase {
     fn execute(&self, doc: &mut MapDocument) -> Result<(), String> {
         let key = self.coord.to_tile_key();
         let removed = doc.rivers.segments.remove(&key);
-        *self.removed.borrow_mut() = removed;
+        *self.removed.lock().unwrap() = removed;
         Ok(())
     }
 
     fn undo(&self, doc: &mut MapDocument) -> Result<(), String> {
-        if let Some(ref segment) = *self.removed.borrow() {
+        if let Some(ref segment) = *self.removed.lock().unwrap() {
             let key = self.coord.to_tile_key();
             doc.rivers.segments.insert(key, segment.clone());
         }
@@ -115,7 +115,7 @@ impl EditorCommand for RiverErase {
 pub struct FordMark {
     pub coord: HexCoord,
     pub set_ford: bool,
-    pub was_ford: RefCell<bool>,
+    pub was_ford: Mutex<bool>,
 }
 
 impl FordMark {
@@ -123,7 +123,7 @@ impl FordMark {
         Self {
             coord,
             set_ford,
-            was_ford: RefCell::new(false),
+            was_ford: Mutex::new(false),
         }
     }
 }
@@ -138,7 +138,7 @@ impl EditorCommand for FordMark {
             .ok_or_else(|| format!("位置 {:?} 没有河流，无法标记渡口", self.coord))?;
 
         // 保存旧值
-        *self.was_ford.borrow_mut() = segment.is_ford;
+        *self.was_ford.lock().unwrap() = segment.is_ford;
 
         segment.is_ford = self.set_ford;
         Ok(())
@@ -147,7 +147,7 @@ impl EditorCommand for FordMark {
     fn undo(&self, doc: &mut MapDocument) -> Result<(), String> {
         let key = self.coord.to_tile_key();
         if let Some(segment) = doc.rivers.segments.get_mut(&key) {
-            segment.is_ford = *self.was_ford.borrow();
+            segment.is_ford = *self.was_ford.lock().unwrap();
         }
         Ok(())
     }
@@ -162,7 +162,7 @@ pub struct RiverPaintLine {
     pub from: HexCoord,
     pub to: HexCoord,
     pub width: u8,
-    pub painted: RefCell<Vec<(HexCoord, Option<RiverSegment>)>>,
+    pub painted: Mutex<Vec<(HexCoord, Option<RiverSegment>)>>,
 }
 
 impl RiverPaintLine {
@@ -171,7 +171,7 @@ impl RiverPaintLine {
             from,
             to,
             width,
-            painted: RefCell::new(Vec::new()),
+            painted: Mutex::new(Vec::new()),
         }
     }
 }
@@ -183,12 +183,12 @@ impl EditorCommand for RiverPaintLine {
         }
 
         let line = HexCoord::line(self.from, self.to);
-        self.painted.borrow_mut().clear();
+        self.painted.lock().unwrap().clear();
 
         for coord in &line {
             let key = coord.to_tile_key();
             let old = doc.rivers.segments.get(&key).cloned();
-            self.painted.borrow_mut().push((*coord, old));
+            self.painted.lock().unwrap().push((*coord, old));
             doc.rivers.segments.insert(
                 key,
                 RiverSegment {
@@ -202,7 +202,7 @@ impl EditorCommand for RiverPaintLine {
     }
 
     fn undo(&self, doc: &mut MapDocument) -> Result<(), String> {
-        for (coord, old) in self.painted.borrow().iter() {
+        for (coord, old) in self.painted.lock().unwrap().iter() {
             let key = coord.to_tile_key();
             if let Some(segment) = old {
                 doc.rivers.segments.insert(key, segment.clone());
