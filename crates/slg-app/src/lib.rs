@@ -162,6 +162,8 @@ impl Plugin for SlgAppPlugin {
                     render_map_debug,
                 ),
             )
+            // M9.2: 编辑器键盘快捷键 (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z / Ctrl+S)
+            .add_systems(Update, handle_editor_keyboard)
             // 输入链路诊断系统（设置 HEX_PICK_DEBUG=1 启用）
             .add_systems(Update, input_diagnostics)
             // 点击涟漪生命周期
@@ -1530,6 +1532,43 @@ fn render_editor_return(
     });
 }
 
+/// M9.2: 编辑器键盘快捷键 → 发 EditorAction
+///
+/// - Ctrl+Z = Undo
+/// - Ctrl+Y / Ctrl+Shift+Z = Redo
+/// - Ctrl+S = Save
+///
+/// 只在 Editor phase 响应; Playing/Menu phase 静默忽略。
+pub fn handle_editor_keyboard(
+    keys: Res<ButtonInput<KeyCode>>,
+    game_state: Res<GameState>,
+    mut events: EventWriter<slg_editor::editor_state::EditorAction>,
+) {
+    if game_state.phase != GamePhase::Editor {
+        return;
+    }
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if !ctrl {
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyZ) {
+        let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+        if shift {
+            events.send(slg_editor::editor_state::EditorAction::Redo);
+            info!("[Editor] Ctrl+Shift+Z → Redo");
+        } else {
+            events.send(slg_editor::editor_state::EditorAction::Undo);
+            info!("[Editor] Ctrl+Z → Undo");
+        }
+    } else if keys.just_pressed(KeyCode::KeyY) {
+        events.send(slg_editor::editor_state::EditorAction::Redo);
+        info!("[Editor] Ctrl+Y → Redo");
+    } else if keys.just_pressed(KeyCode::KeyS) {
+        events.send(slg_editor::editor_state::EditorAction::Save);
+        info!("[Editor] Ctrl+S → Save");
+    }
+}
+
 /// 地图调试信息（临时，用于排查渲染问题）
 #[allow(clippy::too_many_arguments)] // 调试面板：参数都是只读 Resource / Query，独立运行时无副作用
 fn render_map_debug(
@@ -2099,6 +2138,8 @@ mod bevy_tests {
     fn make_app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins);
+        // M9.2: 加 InputPlugin 让 ButtonInput<KeyCode> 在测试里可用
+        app.add_plugins(bevy::input::InputPlugin);
         // Sprite / Mesh2d 等渲染 component 不在 MinimalPlugins 里；
         // 但 handle_hex_click 的 commands.spawn((Sprite, ...)) 是 deferred，
         // 不会在 system 执行时立刻注册 component，所以测试 1 帧内不会 panic。
@@ -3874,6 +3915,196 @@ mod bevy_tests {
         // 清理
         let _ = std::fs::remove_file(&path);
         eprintln!("TEST35 ✅: Editor Save → Load roundtrip 一致, 文件 {}", path.display());
+    }
+
+    /// TEST36: Ctrl+Z 在 Editor phase → 发 EditorAction::Undo
+    /// M9.2: 键盘快捷键集成测试
+    #[test]
+    fn bevy_editor_ctrl_z_triggers_undo() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::{Key, KeyboardInput, NativeKey};
+        use bevy::prelude::Entity;
+        let mut app = make_app();
+        // 切到 Editor phase
+        {
+            let mut gs = app.world_mut().resource_mut::<GameState>();
+            gs.phase = GamePhase::Editor;
+        }
+        // 注册 dispatch + action + keyboard
+        app.add_systems(
+            Update,
+            (
+                slg_editor::editor_state::dispatch_editor_tool,
+                slg_editor::editor_state::handle_editor_action,
+                handle_editor_keyboard,
+            ),
+        );
+        {
+            let mut state = app
+                .world_mut()
+                .resource_mut::<slg_editor::editor_state::EditorState>();
+            state.current_tool = slg_editor::editor_state::EditorTool::Paint;
+            state.brush_terrain = "terrain_forest".to_string();
+        }
+        // 玩家点 hex 触发 paint, 让 history 有 1 个 undo
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(5, 5),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<slg_editor::editor_state::EditorState>()
+                .history
+                .undo_stack
+                .len(),
+            1,
+            "paint 后 history 应有 1 个 undo"
+        );
+
+        // 注入 Ctrl + Z 按键事件 (通过 KeyboardInput, 让 PreUpdate keyboard_input_system 处理)
+        let make_ki = |code: KeyCode| KeyboardInput {
+            key_code: code,
+            logical_key: Key::Unidentified(NativeKey::Unidentified),
+            state: ButtonState::Pressed,
+            window: Entity::PLACEHOLDER,
+            repeat: false,
+        };
+        app.world_mut().send_event(make_ki(KeyCode::ControlLeft));
+        app.world_mut().send_event(make_ki(KeyCode::KeyZ));
+        // 帧 1: PreUpdate 处理按键, Update 触发 keyboard system → 发 Undo event
+        app.update();
+        // 帧 2: handle_editor_action 读 Undo event → 撤销
+        app.update();
+
+        let state = app
+            .world()
+            .resource::<slg_editor::editor_state::EditorState>();
+        eprintln!(
+            "TEST36 debug: undo_stack={}, redo_stack={}",
+            state.history.undo_stack.len(),
+            state.history.redo_stack.len()
+        );
+        assert_eq!(state.history.undo_stack.len(), 0, "Ctrl+Z 后 undo_stack 应空");
+        assert_eq!(state.history.redo_stack.len(), 1, "Ctrl+Z 后 redo_stack 应有 1");
+        eprintln!("TEST36 ✅: Ctrl+Z → EditorAction::Undo 正确触发");
+    }
+
+    /// TEST37: Ctrl+Z 在 Playing phase → noop (不发 Undo)
+    /// M9.2: 防止游戏模式误触编辑器快捷键
+    #[test]
+    fn bevy_editor_keyboard_noop_in_playing() {
+        use bevy::input::ButtonState;
+        use bevy::input::keyboard::{Key, KeyboardInput, NativeKey};
+        use bevy::prelude::Entity;
+        let mut app = make_app();
+        init_playing_state(app.world_mut()); // phase = Playing
+        app.add_systems(
+            Update,
+            (
+                slg_editor::editor_state::handle_editor_action,
+                handle_editor_keyboard,
+            ),
+        );
+        // 注入 Ctrl+Z 按键事件
+        let make_ki = |code: KeyCode| KeyboardInput {
+            key_code: code,
+            logical_key: Key::Unidentified(NativeKey::Unidentified),
+            state: ButtonState::Pressed,
+            window: Entity::PLACEHOLDER,
+            repeat: false,
+        };
+        app.world_mut().send_event(make_ki(KeyCode::ControlLeft));
+        app.world_mut().send_event(make_ki(KeyCode::KeyZ));
+        app.update();
+        app.update();
+        // 验证: history 仍然空
+        let state = app
+            .world()
+            .resource::<slg_editor::editor_state::EditorState>();
+        assert_eq!(state.history.undo_stack.len(), 0);
+        assert_eq!(state.history.redo_stack.len(), 0);
+        eprintln!("TEST37 ✅: Ctrl+Z 在 Playing phase → keyboard system 早 return, 无副作用");
+    }
+
+    /// TEST38: EditorAction::OpenMap(path) → load_editor 读 → status_message 反馈
+    /// M9.2: Open File UI 集成测试
+    #[test]
+    fn bevy_editor_open_map_action() {
+        let mut app = make_app();
+        {
+            let mut gs = app.world_mut().resource_mut::<GameState>();
+            gs.phase = GamePhase::Editor;
+        }
+        // 先 Save 一份到磁盘, 然后 Open 读回
+        let path = std::env::temp_dir().join("rh_slg_test_open.ron");
+        let _ = std::fs::remove_file(&path);
+        // 准备一个 city entity
+        {
+            let mut state = app
+                .world_mut()
+                .resource_mut::<slg_editor::editor_state::EditorState>();
+            state.current_tool = slg_editor::editor_state::EditorTool::PlaceEntity;
+            state.save_path = Some(path.clone());
+        }
+        app.add_systems(
+            Update,
+            (
+                slg_editor::editor_state::dispatch_editor_tool,
+                slg_editor::editor_state::handle_editor_action,
+            ),
+        );
+        // 放 city
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(22, 22),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+        // Save
+        app.world_mut()
+            .send_event(slg_editor::editor_state::EditorAction::Save);
+        app.update();
+        assert!(path.exists(), "save_path 文件应被创建");
+
+        // 重置 EditorState (清空 placements)
+        {
+            let mut state = app
+                .world_mut()
+                .resource_mut::<slg_editor::editor_state::EditorState>();
+            state.doc.entities.placements.clear();
+        }
+        let cleared = app
+            .world()
+            .resource::<slg_editor::editor_state::EditorState>()
+            .doc
+            .entities
+            .placements
+            .is_empty();
+        assert!(cleared, "Open 之前应先清空 placements");
+
+        // Open → load_editor
+        app.world_mut()
+            .send_event(slg_editor::editor_state::EditorAction::OpenMap(
+                path.clone(),
+            ));
+        app.update();
+        let state = app
+            .world()
+            .resource::<slg_editor::editor_state::EditorState>();
+        let key = HexCoord::new(22, 22).to_tile_key();
+        assert!(
+            state.doc.entities.placements.contains_key(&key),
+            "Open 后 (22,22) 实体应加载回来"
+        );
+        assert!(
+            state.status_message.starts_with("已打开:"),
+            "status_message 应反馈: {}",
+            state.status_message
+        );
+        eprintln!("TEST38 ✅: EditorAction::OpenMap → load_editor 正确读回, status = {}", state.status_message);
+
+        // 清理
+        let _ = std::fs::remove_file(&path);
     }
 }
 

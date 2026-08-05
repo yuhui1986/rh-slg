@@ -18,6 +18,7 @@ pub fn render_editor_toolbar(
     mut contexts: EguiContexts,
     editor_state: Res<EditorState>,
     mut action_events: EventWriter<EditorAction>,
+    mut open_path_buffer: Local<String>,
 ) {
     let ctx = contexts.ctx_mut();
 
@@ -99,13 +100,29 @@ pub fn render_editor_toolbar(
 
             ui.separator();
 
-            // ---- 保存 / 新建 ----
+            // ---- 保存 / 新建 / 打开 ----
             if ui.button("💾 Save").clicked() {
                 action_events.send(EditorAction::Save);
             }
             if ui.button("📄 New").clicked() {
                 action_events.send(EditorAction::NewMap);
             }
+
+            // Open: 路径输入 + 按钮
+            // M9.2: 暂用文本输入 (无 native file dialog, 跨平台最简)
+            ui.label("打开:");
+            ui.add(
+                egui::TextEdit::singleline(&mut *open_path_buffer)
+                    .hint_text("saves/xxx.ron")
+                    .desired_width(160.0),
+            );
+            ui.add_enabled_ui(!open_path_buffer.trim().is_empty(), |ui| {
+                if ui.button("📂 Open").clicked() {
+                    let p = std::path::PathBuf::from(open_path_buffer.trim());
+                    action_events.send(EditorAction::OpenMap(p));
+                    open_path_buffer.clear();
+                }
+            });
         });
     });
 
@@ -137,5 +154,18 @@ mod tests {
         assert_eq!(terrain_short("terrain_forest"), "森林");
         assert_eq!(terrain_short("terrain_mountain"), "山地");
         assert_eq!(terrain_short("terrain_water"), "水域");
+    }
+
+    /// M9.2: Open path 解析 — 用户输入 "  saves/foo.ron  " → trim → PathBuf("saves/foo.ron")
+    #[test]
+    fn test_open_path_trim_whitespace() {
+        // 模拟 UI 输入: 带前后空格的 path
+        let raw = "  saves/cool_map.ron  ".to_string();
+        let trimmed = raw.trim();
+        let p = std::path::PathBuf::from(trimmed);
+        assert_eq!(p.to_str().unwrap(), "saves/cool_map.ron");
+        // 空字符串 / 全空格 → trim 后空, 按钮应 disable
+        let empty = "   ".to_string();
+        assert!(empty.trim().is_empty(), "全空格 trim 后应空, 按钮 disable");
     }
 }
