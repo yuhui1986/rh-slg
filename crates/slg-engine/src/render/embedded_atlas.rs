@@ -9,10 +9,13 @@
 use bevy::prelude::*;
 
 /// atlas.png 字节 (1024x1024, 8 地形 + N icon)
-pub const ATLAS_PNG: &[u8] = include_bytes!("../../assets/atlas.png");
+///
+/// M10.4: 从 OUT_DIR 读 (build.rs 把 workspace 根 `assets/textures/atlas.png`
+/// 复制到 OUT_DIR), 不再依赖 `crates/slg-engine/assets/` 这层手工同步。
+pub const ATLAS_PNG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/atlas.png"));
 
-/// atlas.json 字符串
-pub const ATLAS_JSON: &str = include_str!("../../assets/atlas.json");
+/// atlas.json 字符串 (同上, 来自 OUT_DIR)
+pub const ATLAS_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/atlas.json"));
 
 /// 8 地形 UV 数组 (索引 = TerrainType::to_u8)
 ///
@@ -94,5 +97,35 @@ mod tests {
         assert!((res.0[1][0] - 32.0 / 1024.0).abs() < 0.001);
         // 索引 7 (Pass/Snow) 也填了
         assert!((res.0[7][2] - res.0[7][0]) > 0.0, "tile 7 应该有非零宽度");
+    }
+
+    /// TEST46: ATLAS_PNG 字节能通过 Image::from_buffer 解析
+    ///
+    /// M10.3 关键验证: slg-app/start_new_game 跑的就是这行 (会 .expect() panic 如果失败)。
+    /// 这里是单测, 直接对编译嵌入的 PNG 跑 Image::from_buffer,
+    /// 失败的话测试就红, 不需要真启动 Bevy app。
+    #[test]
+    fn test_atlas_png_loads_as_bevy_image() {
+        use bevy::image::{CompressedImageFormats, ImageSampler, ImageType};
+        use bevy::render::render_asset::RenderAssetUsages;
+
+        let result = bevy::prelude::Image::from_buffer(
+            ATLAS_PNG,
+            ImageType::Extension("png"),
+            CompressedImageFormats::NONE,
+            true, // is_srgb
+            ImageSampler::nearest(), // pixel art 不要过滤
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        let image = result.expect("ATLAS_PNG 应能被 bevy::image 解析 (否则 start_new_game 会 panic)");
+
+        // 1024x1024
+        assert_eq!(image.width(), 1024, "atlas 宽度");
+        assert_eq!(image.height(), 1024, "atlas 高度");
+
+        // 8 地形 + 9 icon = 17 个 tile (8*8 grid, 第一行 8 地形, 后面是 icon)
+        // 我们不强求具体排布, 但 atlas_size 1024 / tile_size 32 = 32, 32*32 = 1024 个 tile
+        // 这里只验证 image 非空
+        assert!(!image.data.is_empty(), "image 数据应存在, 长度={}", image.data.len());
     }
 }
