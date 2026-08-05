@@ -144,6 +144,8 @@ impl Plugin for SlgAppPlugin {
             .init_resource::<TileResourceMap>()
             .init_resource::<BuildingManagerResource>()
             .init_resource::<CityManagerResource>()
+            .init_resource::<SelectedHex>() // M8 UI
+            .add_event::<BuildAction>()     // M8 UI
             // 启动系统：生成地图、初始化势力
             .add_systems(Startup, setup_game)
             // 主菜单动作处理 + 地图点击
@@ -167,6 +169,8 @@ impl Plugin for SlgAppPlugin {
             .add_systems(Update, march_sprite_system)
             // 胜利/失败检查（每帧 game phase = Playing 时跑）
             .add_systems(Update, check_victory_system)
+            // M8 UI: 处理建筑/分城指令
+            .add_systems(Update, handle_build_order)
             // 游戏循环系统：在 tick_dispatcher 之后运行
             .add_systems(
                 Update,
@@ -255,6 +259,43 @@ impl Default for GameState {
             player_faction_id: String::new(),
             difficulty: Difficulty::Normal,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M8 UI: 选中 + 建筑指令
+// ---------------------------------------------------------------------------
+
+/// M8 UI: 当前选中的 hex (用于显示建筑面板 / 高亮)
+///
+/// - `None` 表示没选
+/// - 玩家点己方格 → 选中 (toggle: 同格再点取消)
+/// - 玩家点非己方 → 取消选中
+#[derive(Resource, Default, Debug, Clone)]
+pub struct SelectedHex {
+    pub coord: Option<HexCoord>,
+}
+
+/// M8 UI: 建筑/分城指令
+///
+/// UI panel 按钮触发 → 发 BuildAction event → `handle_build_order` 执行
+#[derive(Event, Debug, Clone, PartialEq, Eq)]
+pub enum BuildAction {
+    /// 在 coord 上建 1 个 L1 建筑
+    Build(Coord, slg_core::building::BuildingType),
+    /// 升级 coord 上的建筑 (扣资源, level+1)
+    Upgrade(Coord),
+    /// 在 coord 建分城 (扣 500g+200f+100w, 需要 6+ 邻接)
+    EstablishSubcity(Coord),
+}
+
+/// 用 newtype 包一下, 避免和 slg_core::map::grid::HexCoord 撞 Event derive 字段
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Coord(pub HexCoord);
+
+impl From<HexCoord> for Coord {
+    fn from(c: HexCoord) -> Self {
+        Coord(c)
     }
 }
 
@@ -1545,6 +1586,7 @@ fn handle_hex_click(
     terrain_map: Res<TerrainMapResource>,
     clock_res: Res<slg_engine::systems::GameClockResource>,
     faction_res: Res<FactionStoreResource>, // M7: 拿玩家主将
+    mut selected_hex: ResMut<SelectedHex>,  // M8: 选中状态
     mut chunk_query: Query<&mut EngineChunkData>,
 ) {
     for event in click_events.read() {
@@ -1565,14 +1607,36 @@ fn handle_hex_click(
 
         match game_state.phase {
             GamePhase::Playing => {
+                // M8: 玩家点己方格 → 选中 (toggle)
+                let player_fid = game_state.player_faction_id.clone();
+                let owner = territory_res
+                    .manager
+                    .owner_map
+                    .get(&coord.to_tile_key())
+                    .cloned();
+                if owner.as_deref() == Some(player_fid.as_str()) {
+                    // 点己方格: toggle 选中
+                    if selected_hex.coord == Some(coord) {
+                        info!("[Playing] 🔘 取消选中: ({}, {})", coord.q, coord.r);
+                        selected_hex.coord = None;
+                    } else {
+                        info!("[Playing] 🔘 选中: ({}, {})", coord.q, coord.r);
+                        selected_hex.coord = Some(coord);
+                    }
+                    continue;
+                }
+                // 点非己方 / 邻接空地: 取消选中 + 尝试派兵
+                if selected_hex.coord.is_some() {
+                    info!("[Playing] 🔘 取消选中 (派兵/无效点)");
+                    selected_hex.coord = None;
+                }
+
                 // **核心 SLG 循环：左键 → 派兵（行军）→ 到达 → 占地**
                 // 之前是直接 occupy（瞬时），现在改成派兵走完才落地。
-                let player_fid = game_state.player_faction_id.clone();
                 let can = territory_res
                     .manager
                     .can_occupy(coord, &player_fid, &terrain_map.map);
                 if !can {
-                    let owner = territory_res.manager.owner_map.get(&coord.to_tile_key());
                     info!(
                         "[Playing] ❌ 不能派兵: ({}, {}), 当前归属={:?}",
                         coord.q, coord.r, owner
@@ -1646,11 +1710,119 @@ fn handle_hex_click(
             }
             GamePhase::Editor => {
                 info!("[Editor] 点击地块 ({}, {})", coord.q, coord.r);
-                // TODO: 编辑器工具响应（笔刷/填充/选择等）
             }
             _ => {
                 // 其他阶段忽略地图点击
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M8 UI: 建筑 / 升级 / 建分城 处理
+// ---------------------------------------------------------------------------
+
+/// 处理 BuildAction event：建建筑 / 升级 / 建分城
+///
+/// 调用方 (UI panel / 测试) 发 BuildAction, 本系统:
+/// - 验证资源 / 条件
+/// - 扣资源
+/// - 调 slg-core BuildingManager / CityManager
+/// - 取消选中 (操作完, 面板自动关闭)
+#[allow(clippy::too_many_arguments)]
+fn handle_build_order(
+    mut events: EventReader<BuildAction>,
+    game_state: Res<GameState>,
+    mut building_res: ResMut<BuildingManagerResource>,
+    mut city_res: ResMut<CityManagerResource>,
+    mut faction_res: ResMut<FactionStoreResource>,
+    territory_res: Res<TerritoryManagerResource>,
+    mut selected_hex: ResMut<SelectedHex>,
+) {
+    for action in events.read() {
+        let player_fid = game_state.player_faction_id.clone();
+        let target = match action {
+            BuildAction::Build(c, _) => c.0,
+            BuildAction::Upgrade(c) => c.0,
+            BuildAction::EstablishSubcity(c) => c.0,
+        };
+        let res = match faction_res.store.factions.get_mut(&player_fid) {
+            Some(f) => f,
+            None => continue,
+        };
+
+        match action {
+            BuildAction::Build(c, btype) => {
+                info!(
+                    "[BuildAction] 玩家 {} 尝试在 ({},{}) 建 {:?}",
+                    player_fid, c.0.q, c.0.r, btype
+                );
+                match building_res.manager.build(
+                    c.0,
+                    *btype,
+                    player_fid.clone(),
+                    &mut res.resources,
+                ) {
+                    Ok(_) => info!(
+                        "[BuildAction] ✅ 建 {:?} L1 at ({},{}) 成功, 扣 50 gold",
+                        btype, c.0.q, c.0.r
+                    ),
+                    Err(slg_core::building::BuildError::AlreadyBuilt) => {
+                        info!("[BuildAction] ❌ 该格已有建筑")
+                    }
+                    Err(slg_core::building::BuildError::InsufficientResources) => {
+                        info!("[BuildAction] ❌ 资源不足 (需 50 gold)")
+                    }
+                }
+            }
+            BuildAction::Upgrade(c) => {
+                info!(
+                    "[BuildAction] 玩家 {} 尝试升级 ({},{})",
+                    player_fid, c.0.q, c.0.r
+                );
+                match building_res.manager.upgrade(c.0, &mut res.resources) {
+                    Ok(new_level) => info!(
+                        "[BuildAction] ✅ 升级 ({},{}) → L{}",
+                        c.0.q, c.0.r, new_level
+                    ),
+                    Err(slg_core::building::UpgradeError::MaxLevel) => {
+                        info!("[BuildAction] ❌ 已满级 (L3)")
+                    }
+                    Err(slg_core::building::UpgradeError::InsufficientResources) => {
+                        info!("[BuildAction] ❌ 资源不足")
+                    }
+                }
+            }
+            BuildAction::EstablishSubcity(c) => {
+                info!(
+                    "[BuildAction] 玩家 {} 尝试在 ({},{}) 建分城",
+                    player_fid, c.0.q, c.0.r
+                );
+                let owner_keys: std::collections::BTreeSet<u64> = territory_res
+                    .manager
+                    .owner_map
+                    .iter()
+                    .filter(|(_, f)| f.as_str() == player_fid.as_str())
+                    .map(|(k, _)| *k)
+                    .collect();
+                match city_res.manager.establish_subcity(
+                    c.0,
+                    player_fid.clone(),
+                    &mut res.resources,
+                    &owner_keys,
+                ) {
+                    Ok(_) => info!(
+                        "[BuildAction] ✅ 建分城 ({},{}) 成功, 扣 500g+200f+100w",
+                        c.0.q, c.0.r
+                    ),
+                    Err(e) => info!("[BuildAction] ❌ 建分城失败: {:?}", e),
+                }
+            }
+        }
+
+        // 操作完, 取消选中
+        if selected_hex.coord == Some(target) {
+            selected_hex.coord = None;
         }
     }
 }
@@ -1801,6 +1973,8 @@ mod bevy_tests {
         app.init_resource::<TileResourceMap>();
         app.init_resource::<BuildingManagerResource>(); // M8
         app.init_resource::<CityManagerResource>();    // M8
+        app.init_resource::<SelectedHex>();            // M8 UI
+        app.add_event::<BuildAction>();                 // M8 UI
         app.init_resource::<slg_engine::systems::GameClockResource>();
         app.init_resource::<slg_engine::systems::CommandQueueResource>();
         app.init_resource::<slg_ui::panels::game_over::GameOverState>();
@@ -2784,6 +2958,13 @@ mod bevy_tests {
         let mut app = make_app();
         init_playing_state(app.world_mut());
 
+        // 给玩家加资源 (建 L1 需 50 gold)
+        let mut res_for_build = {
+            let fs = app.world().resource::<FactionStoreResource>();
+            let mut r = fs.store.factions.get("faction_1").unwrap().resources.clone();
+            r.gold = 200;
+            r
+        };
         // 在玩家主城 (68, 65) 建农田 L1
         {
             let mut bm = app.world_mut().resource_mut::<BuildingManagerResource>();
@@ -2792,8 +2973,13 @@ mod bevy_tests {
                     HexCoord::new(68, 65),
                     slg_core::building::BuildingType::Farm,
                     "faction_1".to_string(),
+                    &mut res_for_build,
                 )
                 .unwrap();
+        }
+        {
+            let mut fs = app.world_mut().resource_mut::<FactionStoreResource>();
+            fs.store.factions.get_mut("faction_1").unwrap().resources = res_for_build;
         }
 
         // 拿 food 初始值
@@ -2841,7 +3027,14 @@ mod bevy_tests {
         let mut app = make_app();
         init_playing_state(app.world_mut());
 
-        // 建农田 L1
+        // 建农田 L1 (扣 50 gold)
+        let mut res_for_build = {
+            let fs = app.world().resource::<FactionStoreResource>();
+            let mut r = fs.store.factions.get("faction_1").unwrap().resources.clone();
+            r.gold = 1000;
+            r.food = 1000;
+            r
+        };
         {
             let mut bm = app.world_mut().resource_mut::<BuildingManagerResource>();
             bm.manager
@@ -2849,8 +3042,13 @@ mod bevy_tests {
                     HexCoord::new(68, 65),
                     slg_core::building::BuildingType::Farm,
                     "faction_1".to_string(),
+                    &mut res_for_build,
                 )
                 .unwrap();
+        }
+        {
+            let mut fs = app.world_mut().resource_mut::<FactionStoreResource>();
+            fs.store.factions.get_mut("faction_1").unwrap().resources = res_for_build;
         }
         // 准备升级资源 (取出, mutate)
         let mut res_for_upgrade = {
@@ -3021,14 +3219,24 @@ mod bevy_tests {
                 .occupy(HexCoord::new(69, 65), &"faction_1".to_string());
         }
         {
+            let mut res_for_build = {
+                let fs = app.world().resource::<FactionStoreResource>();
+                let mut r = fs.store.factions.get("faction_1").unwrap().resources.clone();
+                r.gold = 1000;
+                r.food = 1000;
+                r
+            };
             let mut bm = app.world_mut().resource_mut::<BuildingManagerResource>();
             bm.manager
                 .build(
                     HexCoord::new(69, 65),
                     slg_core::building::BuildingType::CityWall,
                     "faction_1".to_string(),
+                    &mut res_for_build,
                 )
                 .unwrap();
+            let mut fs = app.world_mut().resource_mut::<FactionStoreResource>();
+            fs.store.factions.get_mut("faction_1").unwrap().resources = res_for_build;
         }
         // 升级 - 取出 res mutate, build.upgrade 接受 &mut FactionResources
         let mut res_for_upgrade = {
@@ -3064,6 +3272,152 @@ mod bevy_tests {
         );
 
         eprintln!("TEST22 ✅: 城防 L2 在 (69,65) 加成 × 1.6 (defender 200 → 320)");
+    }
+
+    // -----------------------------------------------------------------------
+    // M8 UI: 选中 / 建筑指令
+    // -----------------------------------------------------------------------
+
+    /// TEST23: 点己方格 → SelectedHex.coord = Some(coord)
+    #[test]
+    fn bevy_select_own_hex() {
+        use slg_engine::camera::HexClickEvent;
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        app.add_systems(Update, handle_hex_click);
+
+        // 点玩家主城 (68, 65)
+        app.world_mut().send_event(HexClickEvent {
+            coord: HexCoord::new(68, 65),
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+
+        let selected = app.world().resource::<SelectedHex>();
+        assert_eq!(
+            selected.coord,
+            Some(HexCoord::new(68, 65)),
+            "点己方格应被选中"
+        );
+        eprintln!("TEST23 ✅: 点玩家主城 (68,65) → 选中");
+    }
+
+    /// TEST24: 点己方格两次 → toggle 取消
+    #[test]
+    fn bevy_select_toggle_off() {
+        use slg_engine::camera::HexClickEvent;
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        app.add_systems(Update, handle_hex_click);
+
+        let coord = HexCoord::new(68, 65);
+        // 第 1 次点
+        app.world_mut().send_event(HexClickEvent {
+            coord,
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+        assert_eq!(app.world().resource::<SelectedHex>().coord, Some(coord));
+        // 第 2 次点同格 → 取消
+        app.world_mut().send_event(HexClickEvent {
+            coord,
+            world_pos: Vec2::new(0.0, 0.0),
+        });
+        app.update();
+        assert_eq!(
+            app.world().resource::<SelectedHex>().coord,
+            None,
+            "再点同格应取消选中"
+        );
+        eprintln!("TEST24 ✅: 点己方格 2 次 → toggle 取消");
+    }
+
+    /// TEST25: 发 BuildAction::Build → 建筑被建 + 资源扣
+    #[test]
+    fn bevy_build_action_creates_building() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+        // 给玩家加资源
+        {
+            let res_for_test = {
+                let fs = app.world().resource::<FactionStoreResource>();
+                let mut r = fs.store.factions.get("faction_1").unwrap().resources.clone();
+                r.gold = 200;
+                r
+            };
+            {
+                let mut fs = app.world_mut().resource_mut::<FactionStoreResource>();
+                fs.store.factions.get_mut("faction_1").unwrap().resources = res_for_test;
+            }
+        }
+        app.add_systems(Update, handle_build_order);
+
+        // 发 BuildAction::Build (Farm)
+        app.world_mut().send_event(BuildAction::Build(
+            Coord(HexCoord::new(68, 65)),
+            slg_core::building::BuildingType::Farm,
+        ));
+        app.update();
+
+        // 验证建筑被建
+        let has_building = {
+            let bm = app.world().resource::<BuildingManagerResource>();
+            bm.manager.get(HexCoord::new(68, 65)).is_some()
+        };
+        assert!(has_building, "Farm 已被建");
+
+        // 验证资源被扣 (200 - 50 = 150)
+        let gold_after = {
+            let fs = app.world().resource::<FactionStoreResource>();
+            fs.store.factions.get("faction_1").unwrap().resources.gold
+        };
+        assert_eq!(gold_after, 150, "建 L1 扣 50 gold, 200 - 50 = 150");
+        eprintln!("TEST25 ✅: BuildAction::Build → 农田 L1, 扣 50 gold");
+    }
+
+    /// TEST26: 发 BuildAction::Upgrade → 升级 L1→L2
+    #[test]
+    fn bevy_build_action_upgrades() {
+        let mut app = make_app();
+        init_playing_state(app.world_mut());
+
+        // 建 L1 (扣 50 gold) + 加 1000 gold 用于升级
+        let mut res = {
+            let fs = app.world().resource::<FactionStoreResource>();
+            let mut r = fs.store.factions.get("faction_1").unwrap().resources.clone();
+            r.gold = 2000;
+            r.food = 2000;
+            r
+        };
+        {
+            let mut bm = app.world_mut().resource_mut::<BuildingManagerResource>();
+            bm.manager
+                .build(
+                    HexCoord::new(68, 65),
+                    slg_core::building::BuildingType::Farm,
+                    "faction_1".to_string(),
+                    &mut res,
+                )
+                .unwrap();
+        }
+        {
+            let mut fs = app.world_mut().resource_mut::<FactionStoreResource>();
+            fs.store.factions.get_mut("faction_1").unwrap().resources = res.clone();
+        }
+        app.add_systems(Update, handle_build_order);
+
+        // 发 Upgrade
+        app.world_mut()
+            .send_event(BuildAction::Upgrade(Coord(HexCoord::new(68, 65))));
+        app.update();
+
+        // 验证 level = 2
+        let level = {
+            let bm = app.world().resource::<BuildingManagerResource>();
+            bm.manager.get(HexCoord::new(68, 65)).unwrap().level
+        };
+        assert_eq!(level, 2, "升级到 L2");
+        eprintln!("TEST26 ✅: BuildAction::Upgrade → 农田 L1→L2");
     }
 }
 

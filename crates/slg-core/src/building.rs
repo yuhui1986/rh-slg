@@ -162,8 +162,20 @@ impl Building {
 }
 
 // ---------------------------------------------------------------------------
-// 升级
+// 升级 + 建 L1 成本
 // ---------------------------------------------------------------------------
+
+/// 建 L1 建筑成本 (每种建筑)
+pub fn build_cost(_btype: BuildingType) -> crate::entity::faction::FactionResources {
+    crate::entity::faction::FactionResources {
+        gold: 50,
+        food: 0,
+        wood: 0,
+        iron: 0,
+        stone: 0,
+        troops: 0,
+    }
+}
 
 /// 升级所需资源
 ///
@@ -243,18 +255,24 @@ impl BuildingManager {
         Self::default()
     }
 
-    /// 在 coord 上建 1 个 L1 建筑
+    /// 在 coord 上建 1 个 L1 建筑 (扣资源)
     ///
-    /// 失败条件：coord 已有建筑
+    /// 失败条件：coord 已有建筑 / 资源不足
     pub fn build(
         &mut self,
         coord: HexCoord,
         btype: BuildingType,
         owner: FactionId,
+        owner_resources: &mut crate::entity::faction::FactionResources,
     ) -> Result<&Building, BuildError> {
         if self.buildings.contains_key(&coord) {
             return Err(BuildError::AlreadyBuilt);
         }
+        let cost = build_cost(btype);
+        if owner_resources.gold < cost.gold {
+            return Err(BuildError::InsufficientResources);
+        }
+        owner_resources.gold -= cost.gold;
         self.buildings
             .insert(coord, Building::new(btype, 1, owner));
         Ok(self.buildings.get(&coord).unwrap())
@@ -330,6 +348,8 @@ impl BuildingManager {
 pub enum BuildError {
     /// 该 hex 已有建筑
     AlreadyBuilt,
+    /// 资源不足
+    InsufficientResources,
 }
 
 // ---------------------------------------------------------------------------
@@ -337,6 +357,7 @@ pub enum BuildError {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -420,7 +441,9 @@ mod tests {
     fn test_building_manager_build_and_get() {
         let mut mgr = BuildingManager::new();
         let coord = HexCoord::new(5, 5);
-        mgr.build(coord, BuildingType::Farm, "faction_1".to_string())
+        let mut res = crate::entity::faction::FactionResources::default();
+        res.gold = 100;
+        mgr.build(coord, BuildingType::Farm, "faction_1".to_string(), &mut res)
             .unwrap();
         let b = mgr.get(coord).unwrap();
         assert_eq!(b.btype, BuildingType::Farm);
@@ -431,9 +454,16 @@ mod tests {
     fn test_building_manager_already_built() {
         let mut mgr = BuildingManager::new();
         let coord = HexCoord::new(5, 5);
-        mgr.build(coord, BuildingType::Farm, "faction_1".to_string())
+        let mut res = crate::entity::faction::FactionResources::default();
+        res.gold = 100;
+        mgr.build(coord, BuildingType::Farm, "faction_1".to_string(), &mut res)
             .unwrap();
-        let result = mgr.build(coord, BuildingType::Mine, "faction_1".to_string());
+        let result = mgr.build(
+            coord,
+            BuildingType::Mine,
+            "faction_1".to_string(),
+            &mut res,
+        );
         assert_eq!(result, Err(BuildError::AlreadyBuilt));
     }
 
@@ -441,7 +471,9 @@ mod tests {
     fn test_building_manager_demolish() {
         let mut mgr = BuildingManager::new();
         let coord = HexCoord::new(5, 5);
-        mgr.build(coord, BuildingType::Farm, "faction_1".to_string())
+        let mut res = crate::entity::faction::FactionResources::default();
+        res.gold = 100;
+        mgr.build(coord, BuildingType::Farm, "faction_1".to_string(), &mut res)
             .unwrap();
         let b = mgr.demolish(coord).unwrap();
         assert_eq!(b.btype, BuildingType::Farm);
@@ -451,11 +483,23 @@ mod tests {
     #[test]
     fn test_total_resource_bonus_for_owner() {
         let mut mgr = BuildingManager::new();
+        let mut res = crate::entity::faction::FactionResources::default();
+        res.gold = 1000;
         // faction_1: 1 农田 L1 + 1 伐木场 L2
-        mgr.build(HexCoord::new(0, 0), BuildingType::Farm, "faction_1".to_string())
-            .unwrap();
-        mgr.build(HexCoord::new(1, 0), BuildingType::LumberMill, "faction_1".to_string())
-            .unwrap();
+        mgr.build(
+            HexCoord::new(0, 0),
+            BuildingType::Farm,
+            "faction_1".to_string(),
+            &mut res,
+        )
+        .unwrap();
+        mgr.build(
+            HexCoord::new(1, 0),
+            BuildingType::LumberMill,
+            "faction_1".to_string(),
+            &mut res,
+        )
+        .unwrap();
         // 升级伐木场到 L2
         mgr.upgrade(
             HexCoord::new(1, 0),
@@ -467,8 +511,13 @@ mod tests {
         )
         .unwrap();
         // faction_2: 1 矿场 L1 (不算)
-        mgr.build(HexCoord::new(10, 10), BuildingType::Mine, "faction_2".to_string())
-            .unwrap();
+        mgr.build(
+            HexCoord::new(10, 10),
+            BuildingType::Mine,
+            "faction_2".to_string(),
+            &mut res,
+        )
+        .unwrap();
 
         let bonus = mgr.total_resource_bonus_for(&"faction_1".to_string());
         assert_eq!(bonus.food, 2, "1 农田 L1");
@@ -480,7 +529,9 @@ mod tests {
     fn test_combat_bonus_at_with_city_wall_l2() {
         let mut mgr = BuildingManager::new();
         let coord = HexCoord::new(0, 0);
-        mgr.build(coord, BuildingType::CityWall, "faction_1".to_string())
+        let mut res = crate::entity::faction::FactionResources::default();
+        res.gold = 100;
+        mgr.build(coord, BuildingType::CityWall, "faction_1".to_string(), &mut res)
             .unwrap();
         mgr.upgrade(
             coord,
@@ -496,5 +547,19 @@ mod tests {
             (bonus.defender_troop_multiplier - 1.6).abs() < 1e-9,
             "L2 城防 defender 兵力 × 1.6"
         );
+    }
+
+    #[test]
+    fn test_build_insufficient_resources() {
+        let mut mgr = BuildingManager::new();
+        let mut res = crate::entity::faction::FactionResources::default();
+        // gold = 0 < 50 (build_cost)
+        let result = mgr.build(
+            HexCoord::new(0, 0),
+            BuildingType::Farm,
+            "faction_1".to_string(),
+            &mut res,
+        );
+        assert_eq!(result, Err(BuildError::InsufficientResources));
     }
 }

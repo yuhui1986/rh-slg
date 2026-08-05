@@ -14,6 +14,8 @@ impl Plugin for SlgUiPlugin {
         app.add_plugins(EguiPlugin)
             .init_resource::<top_bar::TopBarState>()
             .init_resource::<battle_report::BattleReportState>()
+            .init_resource::<build_panel::BuildPanelState>() // M8
+            .add_event::<build_panel::BuildPanelAction>()    // M8
             .init_resource::<command_panel::CommandPanelState>()
             .init_resource::<minimap::MinimapState>()
             .init_resource::<gallery::GalleryUiState>()
@@ -31,6 +33,7 @@ impl Plugin for SlgUiPlugin {
                 (
                     top_bar::render_top_bar,
                     battle_report::render_battle_report,
+                    build_panel::render_build_panel, // M8
                     command_panel::render_command_panel,
                     minimap::render_minimap,
                     gallery::render_gallery,
