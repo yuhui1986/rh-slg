@@ -159,7 +159,6 @@ impl Plugin for SlgAppPlugin {
                     handle_hex_click,
                     handle_hex_right_click,
                     render_editor_return,
-                    render_map_debug,
                 ),
             )
             // M9.2: 编辑器键盘快捷键 (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z / Ctrl+S)
@@ -226,16 +225,17 @@ struct MainCityMarker {
     pub hex: HexCoord,
 }
 
-/// 在点击位置 spawn 一个白色圆环
+/// 在点击位置 spawn 一个金色小点 (1s 淡出)
+///
+/// M10.2: 从"白色 20x20 大方块"改"金色 8x8 小点"
+/// - 之前 20x20 跟 hex (≈28 宽) 差不多大, 看着像"白色 hex 弹出来", 抢戏
+/// - 玩家色 = 黄金 (1.0, 0.84, 0.0) 跟主城/行军 sprite 统一
+/// - 8x8 在 hex 中心是一个小点, 不会盖住 hex
 fn spawn_click_ring(commands: &mut Commands, world_pos: Vec2) {
-    // 圆环大小需要跟相机 scale 反向关联：scale 越大（看得越远），圆环也越大
-    // 简化方案：固定 20 世界单位（在 scale=1.0 下 20 像素，scale=3.0 下 60 像素，足够醒目）
-    let size = 20.0_f32;
-    // Bevy 0.15：直接 spawn 组件，不再用 SpriteBundle（已 deprecated）
-    // Sprite 组件会自动插入默认的 Transform + GlobalTransform + Visibility
+    let size = 8.0_f32;
     commands.spawn((
         Sprite {
-            color: Color::srgba(1.0, 1.0, 1.0, 1.0),
+            color: Color::srgba(1.0, 0.84, 0.0, 0.9), // 黄金, 略透明
             custom_size: Some(Vec2::new(size, size)),
             ..default()
         },
@@ -1606,143 +1606,6 @@ pub fn handle_editor_keyboard(
         info!("[Editor] Ctrl+S → Save");
     }
 }
-
-/// 地图调试信息（临时，用于排查渲染问题）
-#[allow(clippy::too_many_arguments)] // 调试面板：参数都是只读 Resource / Query，独立运行时无副作用
-fn render_map_debug(
-    mut contexts: EguiContexts,
-    game_state: Res<GameState>,
-    chunk_query: Query<&EngineChunkData>,
-    camera_query: Query<&Transform, With<Camera2d>>,
-    projection_query: Query<&Projection, With<Camera2d>>,
-    pick_result: Res<slg_engine::camera::HexPickResult>,
-    mouse_button: Res<ButtonInput<MouseButton>>,
-    main_city_markers: Query<(&MainCityMarker, &Transform)>,
-    faction_res: Res<FactionStoreResource>,
-) {
-    if game_state.phase != GamePhase::Playing {
-        return;
-    }
-
-    let ctx = contexts.ctx_mut();
-
-    // 改用 SidePanel 而不是 Window：
-    // - Window 是 floating，可能盖住中央；title bar / 边框实际 region 与 fixed_size 行为不可控
-    // - SidePanel 物理上贴边，绝对不会盖住中央地图
-    egui::SidePanel::right("debug_panel")
-        .default_width(320.0)
-        .resizable(false)
-        .show(ctx, |ui| {
-            // 相机
-            if let Ok(t) = camera_query.get_single() {
-                ui.label(format!("相机: ({:.1}, {:.1})", t.translation.x, t.translation.y));
-            }
-            if let Ok(Projection::Orthographic(ortho)) = projection_query.get_single() {
-                let zoom = 1.0 / ortho.scale;
-                ui.label(format!("缩放: {:.2}, zoom: {:.4}", ortho.scale, zoom));
-            }
-
-            // Chunk
-            let count = chunk_query.iter().count();
-            ui.label(format!("Chunk 数: {}", count));
-
-            // 地形统计
-            let mut terrain_counts = [0u32; 8];
-            for chunk in chunk_query.iter() {
-                for &t in &chunk.terrains {
-                    if (t as usize) < 8 {
-                        terrain_counts[t as usize] += 1;
-                    }
-                }
-            }
-            ui.label(format!(
-                "平原={} 水={} 山={} 森={} 沙={} 沼={} 丘={} 关={}",
-                terrain_counts[0], terrain_counts[2], terrain_counts[1],
-                terrain_counts[3], terrain_counts[4], terrain_counts[5],
-                terrain_counts[6], terrain_counts[7]
-            ));
-
-            // 第一个chunk LOD
-            if let Some(chunk) = chunk_query.iter().next() {
-                ui.label(format!("Chunk(0,0) LOD={}, dirty={}", chunk.current_lod, chunk.dirty));
-            }
-
-            ui.separator();
-            ui.label("─── 主城 ───");
-            // 主城 marker 数 + 每个的坐标（用来核对"只看到 5 个"是哪 5 个）
-            let mut city_lines: Vec<String> = Vec::new();
-            city_lines.push(format!("主城 marker 总数: {} (期望 6)", main_city_markers.iter().count()));
-            for (marker, t) in main_city_markers.iter() {
-                // 打印 hex (q, r) + world (x, y)：立刻能看出是 hex 本身为负
-                // 还是 hex→world 转换出错
-                city_lines.push(format!(
-                    "  • {} hex=({}, {}) world=({:.1}, {:.1})",
-                    marker.faction_id,
-                    marker.hex.q,
-                    marker.hex.r,
-                    t.translation.x,
-                    t.translation.y
-                ));
-            }
-            // 玩家势力 + 主城坐标（期望玩家 ID = FactionIdMap.get(6) 的 key）
-            if let Some(player_faction) = faction_res.store.factions.get(&game_state.player_faction_id) {
-                if let Some(mc) = player_faction.main_city {
-                    city_lines.push(format!(
-                        "玩家 {} 主城 hex=({}, {})",
-                        game_state.player_faction_id,
-                        mc.q,
-                        mc.r
-                    ));
-                }
-            }
-            for line in city_lines {
-                ui.label(line);
-            }
-
-            ui.separator();
-            ui.label("─── 迷雾 ───");
-            // 统计全图 fog 状态：可见 / 全部 / 百分比
-            // 用来核对 fog init 是否生效（玩家主城周围应该有 ~7 格可见）
-            let mut visible = 0u32;
-            let mut total = 0u32;
-            for chunk in chunk_query.iter() {
-                for &f in &chunk.fog {
-                    total += 1;
-                    if f == 1 {
-                        visible += 1;
-                    }
-                }
-            }
-            let pct = if total > 0 { visible / (total / 100).max(1) } else { 0 };
-            ui.label(format!("可见: {}/{} ({}%)", visible, total, pct));
-
-            ui.separator();
-            ui.label("─── 鼠标/拾取 ───");
-
-            // hex 拾取结果
-            let hex_str = match pick_result.coord {
-                Some(c) => format!("({}, {})", c.q, c.r),
-                None => "None".to_string(),
-            };
-            ui.label(format!("hex 拾取: {}", hex_str));
-
-            // 鼠标按键状态
-            ui.label(format!(
-                "鼠标: L={} L_just={} R={} R_just={}",
-                mouse_button.pressed(MouseButton::Left),
-                mouse_button.just_pressed(MouseButton::Left),
-                mouse_button.pressed(MouseButton::Right),
-                mouse_button.just_pressed(MouseButton::Right),
-            ));
-
-            // egui 拦截状态
-            ui.label(format!("egui 拦截: {}", ctx.is_using_pointer()));
-        });
-}
-
-// ---------------------------------------------------------------------------
-// 地图点击事件处理
-// ---------------------------------------------------------------------------
 
 /// 处理地图地块点击事件
 ///
