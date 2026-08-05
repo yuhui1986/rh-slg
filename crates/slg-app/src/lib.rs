@@ -255,6 +255,8 @@ pub struct GameState {
     pub player_faction_id: String,
     /// 当前难度
     pub difficulty: Difficulty,
+    /// M10.2: 状态消息 (派兵/操作反馈), top_bar 显示, 1.5s 后自动清空
+    pub status_message: String,
 }
 
 impl Default for GameState {
@@ -265,6 +267,7 @@ impl Default for GameState {
             last_processed_tick: 0,
             player_faction_id: String::new(),
             difficulty: Difficulty::Normal,
+            status_message: String::new(),
         }
     }
 }
@@ -1126,11 +1129,13 @@ fn execute_command(
 ///
 /// 将游戏状态同步到 UI 面板。
 fn update_ui_state(
-    game_state: Res<GameState>,
+    mut game_state: ResMut<GameState>,
     clock_res: Res<GameClockResource>,
     faction_res: Res<FactionStoreResource>,
     march_res: Res<MarchManagerResource>,
+    time: Res<Time>,
     mut top_bar: ResMut<slg_ui::panels::top_bar::TopBarState>,
+    mut status_timer: Local<(String, f32)>,
 ) {
     // 控制顶栏显示/隐藏
     top_bar.show = game_state.phase == GamePhase::Playing;
@@ -1150,6 +1155,23 @@ fn update_ui_state(
     top_bar.tick = game_state.tick;
     top_bar.speed = format!("{:?}", clock_res.clock.speed);
     top_bar.marching_count = march_res.manager.active().count() as u32;
+
+    // M10.2: 状态消息同步 + 1.5s 自动清空
+    // game_state.status_message 被 handle_hex_click 设, 这里刷新 top_bar 显示
+    // 当 message 变化时重置 timer, 1.5s 后清空
+    let now = time.elapsed_secs();
+    if game_state.status_message != status_timer.0 {
+        status_timer.0 = game_state.status_message.clone();
+        status_timer.1 = now;
+    }
+    if now - status_timer.1 < 1.5 {
+        top_bar.status_message = status_timer.0.clone();
+    } else {
+        top_bar.status_message = String::new();
+        if !game_state.status_message.is_empty() {
+            game_state.status_message.clear();
+        }
+    }
 }
 
 /// 检查胜利/失败条件
@@ -1733,7 +1755,7 @@ fn render_map_debug(
 fn handle_hex_click(
     mut commands: Commands,
     mut click_events: EventReader<HexClickEvent>,
-    game_state: Res<GameState>,
+    mut game_state: ResMut<GameState>, // M10.2: ResMut 改 status_message
     mut territory_res: ResMut<TerritoryManagerResource>,
     mut march_res: ResMut<MarchManagerResource>,
     mut fog_res: ResMut<FogOfWarResource>,
@@ -1803,6 +1825,19 @@ fn handle_hex_click(
                         "[Playing] ❌ 不能派兵: ({}, {}), 当前归属={:?}",
                         coord.q, coord.r, owner
                     );
+                    // M10.2: 给玩家明确反馈 (status_message)
+                    game_state.status_message = match owner {
+                        Some(other) if other.as_str() != player_fid.as_str() => {
+                            format!("❌ ({},{}) 已被 {} 占据", coord.q, coord.r, other)
+                        }
+                        Some(_) => {
+                            format!("✅ ({},{}) 已是己方", coord.q, coord.r)
+                        }
+                        None => {
+                            // 空地, 但 can_occupy false → 不在邻接范围
+                            format!("❌ ({},{}) 超出派兵范围 (主城邻接 1 圈内)", coord.q, coord.r)
+                        }
+                    };
                     continue;
                 }
 
@@ -1812,6 +1847,7 @@ fn handle_hex_click(
                         "[Playing] ❌ 目标已被行军锁住: ({}, {})",
                         coord.q, coord.r
                     );
+                    game_state.status_message = format!("❌ ({},{}) 已被行军锁定", coord.q, coord.r);
                     continue;
                 }
 
@@ -1865,6 +1901,11 @@ fn handle_hex_click(
                 info!(
                     "[Playing] 🪖 派兵: id={} from=({},{}) to=({},{}) arrive_tick={}, 揭开 {} 格",
                     order.id, from.q, from.r, coord.q, coord.r, order.arrive_tick, order.path.len()
+                );
+                // M10.2: 给玩家明确反馈
+                game_state.status_message = format!(
+                    "🪖 派兵 → ({},{}) 预计 tick {} 到达",
+                    coord.q, coord.r, order.arrive_tick
                 );
 
                 // 暂时 unused warning 防止：visual_entity 留作后续
