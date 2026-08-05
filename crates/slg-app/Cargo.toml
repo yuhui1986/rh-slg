@@ -2,6 +2,7 @@
 name = "slg-app"
 version.workspace = true
 edition.workspace = true
+default-run = "slg-app"
 
 [dependencies]
 slg-data = { path = "../slg-data" }
