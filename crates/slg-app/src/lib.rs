@@ -212,9 +212,11 @@ fn update_click_rings(
             commands.entity(entity).despawn();
             continue;
         }
-        // 剩余生命 0~1.0 → 线性 alpha 1.0→0.0
-        let alpha = ring.lifetime.clamp(0.0, 1.0);
-        sprite.color = Color::srgba(1.0, 1.0, 1.0, alpha);
+        // 剩余生命 0~1.0 → 线性 alpha 0.9→0.0 (保留 spawn 时的金色 1.0, 0.84, 0.0)
+        //
+        // 之前 bug: 设成 (1.0, 1.0, 1.0, alpha) → 玩家看到的是白方块, 不是金点
+        let alpha = ring.lifetime.clamp(0.0, 1.0) * 0.9;
+        sprite.color = Color::srgba(1.0, 0.84, 0.0, alpha);
     }
 }
 
