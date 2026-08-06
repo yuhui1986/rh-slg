@@ -226,17 +226,36 @@ fn generate_full_mesh(
                 .copied()
                 .unwrap_or([0.0, 0.0, 1.0, 1.0]); // fallback 整张图
 
-            // fog 走 alpha 通道 (0.55 = 雾, 1.0 = 正常)
-            // owner 走 rgb: 1.0 = 无染色, 势力色 = 该势力染色
-            // selected: rgb 70% + 金色 30% lerp
+            // M10.3.1 修复: vertex color 走 terrain_col (M9 那套), 不再走 faction_col
+            //
+            // 之前的 bug: vertex color = faction_col = Color::NONE (alpha 0) for unowned hex
+            //   → material.color (WHITE) * mesh.color (0,0,0,1) * texture = 黑色
+            //   → 整张图发黑
+            //
+            // 正确做法: vertex color = terrain_col (绿/灰/蓝...), 当作 tint 跟 atlas texture 叠加
+            //   → 即使 atlas texture 没绑上, 也能看到地形色 (M9 行为)
+            //   → atlas 绑上后, terrain tint × atlas art = 双重效果
+            let terrain_col = atlas::terrain_color_from_u8(terrain_id);
+            let tc = terrain_col.to_srgba();
+            // 势力色 overlay (alpha 0.7 叠在 terrain 之上), 无主 = 不叠
             let faction_col = atlas::faction_color(owner_id);
             let fc = faction_col.to_srgba();
-            let fog_alpha: f32 = if is_fogged { 0.55 } else { 1.0 };
-            let (r, g, b) = if is_selected {
-                // 70% 势力色 + 30% 金色
-                (fc.red * 0.7 + 1.0 * 0.3, fc.green * 0.7 + 0.84 * 0.3, fc.blue * 0.7)
+            let (r, g, b) = if fc.alpha > 0.0 {
+                // terrain × (1 - 0.7) + faction × 0.7
+                (
+                    tc.red * (1.0 - fc.alpha) + fc.red * fc.alpha,
+                    tc.green * (1.0 - fc.alpha) + fc.green * fc.alpha,
+                    tc.blue * (1.0 - fc.alpha) + fc.blue * fc.alpha,
+                )
             } else {
-                (fc.red, fc.green, fc.blue)
+                (tc.red, tc.green, tc.blue)
+            };
+            let fog_alpha: f32 = if is_fogged { 0.55 } else { 1.0 };
+            // 选中: 70% 上面 + 30% 金色
+            let (r, g, b) = if is_selected {
+                (r * 0.7 + 1.0 * 0.3, g * 0.7 + 0.84 * 0.3, b * 0.7)
+            } else {
+                (r, g, b)
             };
             let color_arr = [r, g, b, fog_alpha];
 
@@ -553,5 +572,139 @@ mod tests {
             .map(|a| a.len())
             .unwrap_or(0);
         assert_eq!(pos_count, 7168);
+    }
+
+    /// TEST47 (M10.3.1 修复): unowned hex 的 vertex color 应是 terrain_col (绿/灰/蓝...),
+    /// 不应是 Color::NONE (黑) — 之前的 bug 导致整张图发黑
+    #[test]
+    fn test_unowned_hex_color_is_terrain_not_black() {
+        let mut terrains = [0u8; 1024]; // 全 Plains
+        for i in 0..1024 {
+            terrains[i] = (i % 8) as u8; // 8 地形各占 1/8
+        }
+        let owners = [0u8; 1024]; // 全 unowned
+        let fog = [1u8; 1024];
+        let selected = [0u8; 1024];
+        let atlas_uv = fake_atlas_uv();
+
+        let mesh = generate_full_mesh(&terrains, &owners, &fog, &selected, &atlas_uv);
+        let colors = mesh
+            .attribute(Mesh::ATTRIBUTE_COLOR)
+            .expect("COLOR attribute missing");
+
+        use bevy::render::mesh::VertexAttributeValues;
+        let col_vec = match colors {
+            VertexAttributeValues::Float32x4(v) => v,
+            _ => panic!("COLOR wrong type"),
+        };
+
+        // Plains (terrain 0) 是 (0.4, 0.7, 0.3). 第 0 个 hex 是 Plains.
+        // unowned + fog + not selected → 应该就是 (0.4, 0.7, 0.3, 1.0)
+        let plains_color = col_vec[0]; // hex 0 中心 vertex
+        // 允许一点浮点误差
+        assert!(
+            (plains_color[0] - 0.4).abs() < 0.01,
+            "Plains R 应是 0.4, got {}",
+            plains_color[0]
+        );
+        assert!(
+            (plains_color[1] - 0.7).abs() < 0.01,
+            "Plains G 应是 0.7, got {}",
+            plains_color[1]
+        );
+        assert!(
+            (plains_color[2] - 0.3).abs() < 0.01,
+            "Plains B 应是 0.3, got {}",
+            plains_color[2]
+        );
+        assert!(
+            plains_color[3] > 0.9,
+            "un-fogged alpha 应是 1.0, got {}",
+            plains_color[3]
+        );
+
+        // 关键检查: 不应是纯黑 (0, 0, 0) — 那就是之前 faction_col = Color::NONE 的 bug
+        assert!(
+            plains_color[0] > 0.1 || plains_color[1] > 0.1 || plains_color[2] > 0.1,
+            "Plains color 不是全黑: ({}, {}, {}) — 之前 M10.3 bug 是 0,0,0",
+            plains_color[0], plains_color[1], plains_color[2]
+        );
+    }
+
+    /// TEST48 (M10.3.1 修复): owned hex 的 vertex color = terrain × (1-α) + faction × α
+    /// owner=1 是蓝色, alpha=0.7; Plains 是 (0.4, 0.7, 0.3)
+    /// 期望: (0.4*0.3 + 0.1*0.7, 0.7*0.3 + 0.3*0.7, 0.3*0.3 + 0.95*0.7)
+    ///     = (0.19, 0.42, 0.755)
+    #[test]
+    fn test_owned_hex_blends_terrain_with_faction() {
+        let terrains = [0u8; 1024]; // 全 Plains
+        let mut owners = [0u8; 1024];
+        owners[0] = 1; // 第 0 个 hex = Plains + 魏(blue)
+        let fog = [1u8; 1024];
+        let selected = [0u8; 1024];
+        let atlas_uv = fake_atlas_uv();
+
+        let mesh = generate_full_mesh(&terrains, &owners, &fog, &selected, &atlas_uv);
+        let colors = mesh
+            .attribute(Mesh::ATTRIBUTE_COLOR)
+            .expect("COLOR attribute missing");
+
+        use bevy::render::mesh::VertexAttributeValues;
+        let col_vec = match colors {
+            VertexAttributeValues::Float32x4(v) => v,
+            _ => panic!("COLOR wrong type"),
+        };
+
+        // 第 0 个 hex (Plains + 魏) 中心 vertex
+        let owned_color = col_vec[0];
+        // 期望 (0.19, 0.42, 0.755, 1.0)
+        assert!(
+            (owned_color[0] - 0.19).abs() < 0.01,
+            "Plains+魏 R 应是 0.19, got {}",
+            owned_color[0]
+        );
+        assert!(
+            (owned_color[2] - 0.755).abs() < 0.02,
+            "Plains+魏 B 应是 0.755 (蓝色强), got {}",
+            owned_color[2]
+        );
+
+        // 第 1 个 hex (Plains + unowned) 应该跟 unowned Plains 一致
+        let unowned_color = col_vec[7]; // hex 1 中心 vertex 是 col_vec[1*7 + 0] = col_vec[7]
+        assert!(
+            (unowned_color[0] - 0.4).abs() < 0.01,
+            "Plains+unowned R 应是 0.4 (terrain), got {}",
+            unowned_color[0]
+        );
+    }
+
+    /// TEST49: fogged hex 的 alpha 是 0.55, 不是 1.0
+    #[test]
+    fn test_fogged_hex_alpha_is_055() {
+        let terrains = [0u8; 1024];
+        let owners = [0u8; 1024];
+        let mut fog = [1u8; 1024];
+        fog[0] = 0; // hex 0 = 黑雾
+        let selected = [0u8; 1024];
+        let atlas_uv = fake_atlas_uv();
+
+        let mesh = generate_full_mesh(&terrains, &owners, &fog, &selected, &atlas_uv);
+        let colors = mesh
+            .attribute(Mesh::ATTRIBUTE_COLOR)
+            .expect("COLOR attribute missing");
+
+        use bevy::render::mesh::VertexAttributeValues;
+        let col_vec = match colors {
+            VertexAttributeValues::Float32x4(v) => v,
+            _ => panic!("COLOR wrong type"),
+        };
+
+        // hex 0 中心 vertex
+        let fogged = col_vec[0];
+        assert!(
+            (fogged[3] - 0.55).abs() < 0.01,
+            "fogged alpha 应是 0.55, got {}",
+            fogged[3]
+        );
     }
 }
