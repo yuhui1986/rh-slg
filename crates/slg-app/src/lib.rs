@@ -235,9 +235,14 @@ struct MainCityMarker {
 /// M10.2: 从"白色 20x20 大方块"改"金色 8x8 小点"
 /// - 之前 20x20 跟 hex (≈28 宽) 差不多大, 看着像"白色 hex 弹出来", 抢戏
 /// - 玩家色 = 黄金 (1.0, 0.84, 0.0) 跟主城/行军 sprite 统一
-/// - 8x8 在 hex 中心是一个小点, 不会盖住 hex
+/// - 0.6 world unit (HEX_SIZE=1.0) = 半个 hex 直径, 在 hex 中心是一个清晰小点,
+///   不会盖住 hex 也不会铺满屏幕
+///
+/// **踩过的坑 (M10.2 + M10.3.2)**: 我之前以为 custom_size 是像素, 写 8.0/20.0
+/// → 实际是 world unit, 8 = 8 个 hex 宽, 玩家看到的是半屏"黄布"。
+/// 0.6 = 半个 hex, 视觉上是"在 hex 中心闪一下"。
 fn spawn_click_ring(commands: &mut Commands, world_pos: Vec2) {
-    let size = 8.0_f32;
+    let size = 0.6_f32;
     commands.spawn((
         Sprite {
             color: Color::srgba(1.0, 0.84, 0.0, 0.9), // 黄金, 略透明
@@ -578,6 +583,14 @@ fn start_new_game(
                 if let Some(faction) = faction_res.store.factions.get_mut(faction_id) {
                     faction.main_city = Some(coord);
                 }
+
+                // M10.3.2 修复: 主城那格必须 occupy 进 owner_map
+                //
+                // 之前只 set_main_city (记录在 main_cities HashMap), 没 occupy (进 owner_map)
+                // → 玩家点主城时 owner_map.get() 返回 None
+                // → 走"非己方"分支而不是"toggle 选中"
+                // → 玩家看不见选中效果, 也派不出兵 (can_occupy 找不到 friendly neighbor)
+                territory_res.manager.occupy(coord, faction_id);
             }
         }
     }
