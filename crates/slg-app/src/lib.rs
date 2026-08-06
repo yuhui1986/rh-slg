@@ -1676,7 +1676,13 @@ fn handle_hex_click(
         let coord = event.coord;
 
         // 总是先 spawn 涟漪，让玩家看到点击已检测
-        spawn_click_ring(&mut commands, event.world_pos);
+        // M10.3.4: 用 hex 中心 (不是鼠标世界坐标) 定位 ring
+        //
+        // 之前用 event.world_pos (鼠标 cursor 位置), 玩家点 hex 边缘时 ring 偏到一边,
+        // 跟主城 sprite (中心) 重叠不上, 看着像 ring 飞了。
+        // 改成 hex 中心后, ring 永远在目标 hex 正中央, 视觉对齐 sprite / chunk.
+        let ring_pos = slg_engine::camera::hex_world_position(coord);
+        spawn_click_ring(&mut commands, ring_pos);
 
         // 坐标合法性检查：必须在地图范围内
         // TODO: 从地图元数据获取实际尺寸，当前硬编码 128x128
@@ -1987,8 +1993,9 @@ fn handle_hex_right_click(
     for event in click_events.read() {
         let coord = event.coord;
 
-        // 总是先 spawn 涟漪
-        spawn_click_ring(&mut commands, event.world_pos);
+        // 总是先 spawn 涟漪 (M10.3.4: 用 hex 中心, 不是鼠标坐标)
+        let ring_pos = slg_engine::camera::hex_world_position(coord);
+        spawn_click_ring(&mut commands, ring_pos);
 
         if coord.q < 0 || coord.r < 0 || coord.q >= 128 || coord.r >= 128 {
             info!(
