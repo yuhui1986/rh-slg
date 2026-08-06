@@ -235,14 +235,16 @@ struct MainCityMarker {
 /// M10.2: 从"白色 20x20 大方块"改"金色 8x8 小点"
 /// - 之前 20x20 跟 hex (≈28 宽) 差不多大, 看着像"白色 hex 弹出来", 抢戏
 /// - 玩家色 = 黄金 (1.0, 0.84, 0.0) 跟主城/行军 sprite 统一
-/// - 0.6 world unit (HEX_SIZE=1.0) = 半个 hex 直径, 在 hex 中心是一个清晰小点,
-///   不会盖住 hex 也不会铺满屏幕
+/// - 1.0 world unit (= HEX_SIZE) = 1 个 hex 直径, 视觉上 = "我点的是这个 hex"
+///   不会盖住邻接 hex, 玩家能直观看到自己点中哪一格
 ///
-/// **踩过的坑 (M10.2 + M10.3.2)**: 我之前以为 custom_size 是像素, 写 8.0/20.0
-/// → 实际是 world unit, 8 = 8 个 hex 宽, 玩家看到的是半屏"黄布"。
-/// 0.6 = 半个 hex, 视觉上是"在 hex 中心闪一下"。
+/// **踩过的坑 (M10.2 + M10.3.2 + M10.3.3)**:
+/// - M10.2: custom_size = 20 → 20 hex 宽半屏"白布"
+/// - M10.3.2: custom_size = 8 → 8 hex 宽半屏"黄布" (我以为 8 是像素)
+/// - M10.3.3: custom_size = 0.6 → 半个 hex, 太小人眼看不到
+/// - M10.3.3+: custom_size = 1.0 → 1 个 hex, "点这个 hex" 视觉感
 fn spawn_click_ring(commands: &mut Commands, world_pos: Vec2) {
-    let size = 0.6_f32;
+    let size = 1.0_f32;
     commands.spawn((
         Sprite {
             color: Color::srgba(1.0, 0.84, 0.0, 0.9), // 黄金, 略透明
@@ -265,7 +267,7 @@ pub struct GameState {
     pub player_faction_id: String,
     /// 当前难度
     pub difficulty: Difficulty,
-    /// M10.2: 状态消息 (派兵/操作反馈), top_bar 显示, 1.5s 后自动清空
+    /// M10.2 + M10.3.3: 状态消息 (派兵/操作反馈), top_bar 显示, 3s 后自动清空
     pub status_message: String,
 }
 
@@ -1198,15 +1200,15 @@ fn update_ui_state(
     top_bar.speed = format!("{:?}", clock_res.clock.speed);
     top_bar.marching_count = march_res.manager.active().count() as u32;
 
-    // M10.2: 状态消息同步 + 1.5s 自动清空
+    // M10.2 + M10.3.3: 状态消息同步 + 3s 自动清空
     // game_state.status_message 被 handle_hex_click 设, 这里刷新 top_bar 显示
-    // 当 message 变化时重置 timer, 1.5s 后清空
+    // 当 message 变化时重置 timer, 3s 后清空 (M10.3.3: 1.5s → 3s, 给玩家更长时间看反馈)
     let now = time.elapsed_secs();
     if game_state.status_message != status_timer.0 {
         status_timer.0 = game_state.status_message.clone();
         status_timer.1 = now;
     }
-    if now - status_timer.1 < 1.5 {
+    if now - status_timer.1 < 3.0 {
         top_bar.status_message = status_timer.0.clone();
     } else {
         top_bar.status_message = String::new();
@@ -1702,6 +1704,8 @@ fn handle_hex_click(
                         // M9: 取消 chunk selected 标记
                         sync_chunk_selection(coord, false, &mut chunk_query);
                         selected_hex.coord = None;
+                        // M10.3.3 修复: 给玩家明确反馈 (否则点完看不到任何东西, 以为没反应)
+                        game_state.status_message = format!("取消选中 ({}, {})", coord.q, coord.r);
                     } else {
                         // M9: 如果之前有别的选中格, 先取消它
                         if let Some(prev) = selected_hex.coord {
@@ -1710,6 +1714,8 @@ fn handle_hex_click(
                         info!("[Playing] 🔘 选中: ({}, {})", coord.q, coord.r);
                         sync_chunk_selection(coord, true, &mut chunk_query);
                         selected_hex.coord = Some(coord);
+                        // M10.3.3: 选中反馈 (即使 chunk tint 被 sprite 盖, 状态栏文字也能看见)
+                        game_state.status_message = format!("🔘 选中 ({}, {})", coord.q, coord.r);
                     }
                     continue;
                 }
